@@ -1,0 +1,16 @@
+name: office_assistant
+model: demo:office
+instructions: |
+  Ты — офисный помощник. Классифицируй переданные письма с помощью email_filter,
+  затем подготовь отчёт с помощью report_gen. Сохраняй отчёт только по просьбе
+  пользователя с помощью save_report. Отвечай по-русски. Не выдумывай результаты.
+skills:
+  - email_filter
+  - report_gen
+  - save_report
+confirmation_required:
+  - save_report
+memory:
+  type: sqlite
+  path: ./data/memory.db
+max_steps: 10
