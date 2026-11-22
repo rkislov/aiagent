@@ -72,6 +72,9 @@ def main():
             address = args[1]
             if address not in request["routes"].values():
                 raise PermissionError(f"Network access denied by skill policy: {address}")
+        elif event == "socket.sendto":
+            # Network grants use TCP relays; datagrams have no permitted route.
+            raise PermissionError("Datagram access denied by skill policy")
         elif event == "socket.getaddrinfo":
             host, port = args[0], args[1]
             if (host, int(port or 0)) not in endpoints:
