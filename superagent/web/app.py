@@ -88,7 +88,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     app = FastAPI(title="Superagent", lifespan=lifespan)
     app.state.platform = owner
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]"])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=owner.config.web_hosts)
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):

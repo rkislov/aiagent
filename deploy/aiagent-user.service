@@ -1,0 +1,20 @@
+[Unit]
+Description=AI Agent platform
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/aiagent
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=%h/aiagent-tools/extracted/usr/bin:%h/aiagent/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/aiagent/.venv/bin/python -m superagent --root %h/aiagent serve --port 8081
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

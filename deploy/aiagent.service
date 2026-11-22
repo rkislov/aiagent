@@ -1,0 +1,25 @@
+[Unit]
+Description=aiagent local agent platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aiagent
+Group=aiagent
+WorkingDirectory=/var/lib/aiagent
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/aiagent/.venv/bin/python -m superagent --root /var/lib/aiagent serve --port 8081
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/aiagent
+
+[Install]
+WantedBy=multi-user.target

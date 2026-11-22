@@ -73,7 +73,7 @@ def main():
             import uvicorn
             from .web.app import create_app
             console.print(f"Superagent → http://localhost:{args.port}", markup=False)
-            uvicorn.run(create_app(app), host="127.0.0.1", port=args.port)
+            uvicorn.run(create_app(app), host="127.0.0.1", port=args.port, proxy_headers=True, forwarded_allow_ips="127.0.0.1")
         elif args.command == "skills":
             if args.action == "list":
                 table = Table("Навык", "Версия", "Описание", "Статус")

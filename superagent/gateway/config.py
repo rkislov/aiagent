@@ -173,6 +173,7 @@ class ChannelConfig(StrictModel):
 
 
 class Config(StrictModel):
+    web_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "[::1]"])
     channels: dict[str, ChannelConfig] = Field(default_factory=dict)
     connections: Connections = Field(default_factory=Connections)
     providers: dict[str, ProviderConfig] = Field(default_factory=lambda: {
