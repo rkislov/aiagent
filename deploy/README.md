@@ -14,7 +14,7 @@ web_hosts: [localhost, 127.0.0.1, ai.kislovs.ru]
 До подключения публичного маршрута создайте администратора через CLI:
 
 ```sh
-.venv/bin/python -m superagent auth init
+.venv/bin/python -m superagent auth init admin
 ```
 
 Пароль вводится скрыто. При первом входе пользователь настраивает 2FA и сохраняет

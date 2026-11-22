@@ -108,9 +108,10 @@ def sandbox_command(worker: Path, stage: Path, paths: list[Path], relays: list[s
         profile_path.write_text("\n".join(profile))
         return ["/usr/bin/sandbox-exec", "-f", str(profile_path), *base]
     if sys.platform.startswith("linux"):
-        if not shutil.which("bwrap"):
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
             raise SandboxError("Install bubblewrap (bwrap) for Linux sandboxing; refusing unisolated execution")
-        cmd = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev"]
+        cmd = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev"]
         for path in dict.fromkeys([Path("/usr"), Path("/lib"), Path("/lib64"), runtime, stage]):
             if path.exists():
                 cmd += ["--ro-bind", str(path), str(path)]

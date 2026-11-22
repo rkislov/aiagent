@@ -70,6 +70,14 @@ def test_timeout_and_output_validation(platform):
         platform.runner.executor.run(skill(), {}, 'def run(input):\n    return {"wrong": 3}')
 
 
+def test_linux_uses_resolved_bwrap_path(tmp_path, monkeypatch):
+    from superagent.sandbox.policy import sandbox_command
+    monkeypatch.setattr("superagent.sandbox.policy.sys.platform", "linux")
+    monkeypatch.setattr("superagent.sandbox.policy.shutil.which", lambda _: "/opt/tools/bwrap")
+    command = sandbox_command(tmp_path / "worker.py", tmp_path, [], [], False)
+    assert command[0] == "/opt/tools/bwrap"
+
+
 def test_fails_closed_without_backend(platform, monkeypatch):
     monkeypatch.setattr("superagent.sandbox.policy.shutil.which", lambda _: None)
     with pytest.raises(SandboxError, match="refusing unisolated"):
