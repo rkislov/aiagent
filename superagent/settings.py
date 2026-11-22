@@ -30,8 +30,10 @@ def update(service, draft):
                 if key in old and not entry.get(key): entry[key] = old[key]
     candidate = Config.model_validate({**previous, **draft})
     if (service.root / '.tenant').exists():
-        if any(getattr(entry,field,None) for entry in credential_entries(candidate) for field in ('api_key_env','password_env','secret_env')):
-            raise ValueError('В пользовательском пространстве используйте собственные ключи, а не окружение сервера')
+        # Templates may contain environment defaults; tenants always use their own keys.
+        for entry in credential_entries(candidate):
+            for field in ('api_key_env','password_env','secret_env'):
+                if hasattr(entry, field): setattr(entry, field, None)
     atomic_write(service.root / 'config.yaml', yaml.safe_dump(unpack(candidate.model_dump()), allow_unicode=True, sort_keys=False))
     service.config = candidate
     service.registry.config = candidate

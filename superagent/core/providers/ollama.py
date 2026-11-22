@@ -13,6 +13,10 @@ class OllamaProvider(OpenAIProvider):
         messages = copy.deepcopy(messages)
         for message in messages:
             message["content"] = message.get("content") or ""
+            if isinstance(message["content"], list):
+                parts = message["content"]
+                message["content"] = "\n".join(p["text"] for p in parts if p["type"] == "text")
+                message["images"] = [p["image_url"]["url"].split(",", 1)[1] for p in parts if p["type"] == "image_url"]
             for call in message.get("tool_calls", []):
                 if isinstance(call["function"]["arguments"], str):
                     call["function"]["arguments"] = json.loads(call["function"]["arguments"])

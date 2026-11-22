@@ -18,6 +18,14 @@ def anthropic_messages(messages):
         else:
             role = message["role"]
             blocks = [{"type": "text", "text": message["content"]}] if message.get("content") else []
+            if isinstance(message.get("content"), list):
+                blocks = []
+                for part in message["content"]:
+                    if part["type"] == "text":
+                        blocks.append(part)
+                    elif part["type"] == "image_url":
+                        header, data = part["image_url"]["url"].split(",", 1)
+                        blocks.append({"type": "image", "source": {"type": "base64", "media_type": header[5:].split(";")[0], "data": data}})
             for call in message.get("tool_calls", []):
                 blocks.append({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": json.loads(call["function"]["arguments"])})
         if result and result[-1]["role"] == role:

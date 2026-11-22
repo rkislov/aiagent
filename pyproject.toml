@@ -10,7 +10,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 description = "Local agent and skill workbench"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "httpx>=0.27,<1", "rich>=13,<15", "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "feedparser>=6,<7", "defusedxml>=0.7,<1", "icalendar>=6,<8", "caldav>=2,<4", "slixmpp>=1.8,<2", "argon2-cffi>=23,<26", "pyotp>=2.9,<3", "segno>=1.6,<2", "paramiko>=3,<5", "markdown-it-py>=3,<5"]
+dependencies = ["Pillow>=11,<14", "pydantic>=2.7,<3", "PyYAML>=6,<7", "httpx>=0.27,<1", "rich>=13,<15", "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "feedparser>=6,<7", "defusedxml>=0.7,<1", "icalendar>=6,<8", "caldav>=2,<4", "slixmpp>=1.8,<2", "argon2-cffi>=23,<26", "pyotp>=2.9,<3", "segno>=1.6,<2", "paramiko>=3,<5", "markdown-it-py>=3,<5"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]

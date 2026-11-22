@@ -37,6 +37,9 @@ class Hub(WorkTools,Workflows):
         from .task_writes import WRITE_TOOLS
         if name in WRITE_TOOLS:raise PermissionError('Запись выполняется только через подтверждённый план')
         validate_payload(payload, BUILTINS[name].inputs)
+        if name == 'web_read':
+            from .web_read import read_page
+            return read_page(payload['url'])
         if name in WORKFLOWS:return getattr(self,name)(payload)
         if name in ('commitment_scan','invoice_check','reply_drafts'):
             return getattr(self,name)(payload)

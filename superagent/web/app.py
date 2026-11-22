@@ -14,12 +14,13 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import Field
+from pydantic import Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from superagent.gateway.models import Agent, StrictModel
 from superagent.gateway.registry import parse_skill
 from superagent.service import Platform
+from superagent.schedules import Schedule, Store, Scheduler
 
 
 class SkillDraft(StrictModel):
@@ -36,6 +37,15 @@ class SkillTest(SkillDraft):
 class ChatRequest(StrictModel):
     agent: str
     message: str = Field(min_length=1, max_length=100_000)
+    web_enabled: bool = False
+    images: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, values):
+        from superagent.core.images import validate_images
+        return validate_images(values)
+
     session_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,80}$")
 
 
@@ -74,7 +84,10 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @asynccontextmanager
     async def lifespan(app):
+        scheduler = Scheduler(owner, auth)
+        scheduler.start()
         yield
+        scheduler.close()
         with streams_lock:
             for cancellation in active_streams:
                 cancellation.set()
@@ -178,6 +191,30 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def create_user(request: Request, draft: dict):
         if not request.state.user['admin']: raise HTTPException(403,'Только администратор')
         return auth.create(draft.get('username',''),draft.get('password',''))
+
+    @app.get('/api/schedules')
+    def schedules():
+        return Store(service.root).list()
+
+    @app.post('/api/schedules')
+    def add_schedule(draft: Schedule):
+        service.registry.build(draft.agent)
+        return {'id': Store(service.root).save(draft)}
+
+    @app.put('/api/schedules/{id_}')
+    def edit_schedule(id_: str, draft: Schedule):
+        service.registry.build(draft.agent)
+        return {'id': Store(service.root).save(draft, id_)}
+
+    @app.post('/api/schedules/{id_}/toggle')
+    def toggle_schedule(id_: str, draft: Decision):
+        Store(service.root).toggle(id_, draft.approved)
+        return {'ok': True}
+
+    @app.delete('/api/schedules/{id_}')
+    def delete_schedule(id_: str):
+        Store(service.root).delete(id_)
+        return {'ok': True}
 
     @app.get("/api/settings")
     def settings():
@@ -398,7 +435,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
         def worker():
             try:
-                for event in service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation):
+                for event in service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled):
                     if cancellation.is_set():
                         break
                     if event["type"] == "confirmation":
