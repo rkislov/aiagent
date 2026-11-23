@@ -38,6 +38,7 @@ class SkillTest(SkillDraft):
 class ChatRequest(StrictModel):
     agent: str | None = None
     conversation: bool = False
+    connections: list[str] | None = Field(default=None, max_length=8)
     model: str = Field(default="demo:office", pattern=r"^[a-z][a-z0-9_-]*:.+$")
     message: str = Field(min_length=1, max_length=100_000)
     transport: Literal["stream", "poll"] = "stream"
@@ -329,7 +330,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def workspace():
         with registry_lock:
             service.registry.scan()
-            return {"agents": [a.model_dump() for a in service.registry.agents.values()],
+            from superagent.core.chat_connections import available
+            return {"chat_connections": available(service.config), "agents": [a.model_dump() for a in service.registry.agents.values()],
                     "skills": [s.model_dump() for s in service.registry.skills.values()],
                     "errors": service.registry.errors,
                     "builtin_skills": list(__import__("superagent.integrations.catalog", fromlist=["BUILTINS"]).BUILTINS),
@@ -516,7 +518,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         def worker():
             try:
                 if draft.conversation:
-                    run = service.runner.run_conversation(draft.message, draft.model, attached_agent=draft.agent, session_id=draft.session_id, confirm=confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled)
+                    run = service.runner.run_conversation(draft.message, draft.model, attached_agent=draft.agent, session_id=draft.session_id, confirm=confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled, connections=draft.connections)
                 else:
                     run = service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled)
                 for event in run:

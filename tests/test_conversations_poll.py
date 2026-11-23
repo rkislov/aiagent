@@ -105,3 +105,37 @@ def test_poll_and_conversation_history_are_isolated(platform):
         id_=conversations[0]['id']
         assert bob.get('/api/conversations').json()==[]
         assert bob.get('/api/conversations/'+id_).json()==[]
+
+
+def test_plain_chat_exposes_enabled_read_connections_only(platform):
+    provider=Recorder()
+    platform.config.connections.imap.enabled=True
+    platform.config.connections.imap.host='mail.example.com'
+    platform.config.connections.imap.username='alice'
+    platform.config.connections.jira.enabled=True
+    platform.config.connections.ssh.enabled=True
+    events=list(platform.runner.run_conversation('Check my mail','demo:office',provider=provider))
+    offered={t['function']['name'] for t in provider.calls[-1][1]}
+    assert {'imap_read','jira_search','jira_issue'}<=offered
+    assert not {'ssh_run','jira_create_issue','jira_update_issue','caldav_read','web_search'}&offered
+    session=events[0]['session_id']
+    list(platform.runner.run_conversation('Disable sources','demo:office',session_id=session,connections=[],provider=provider))
+    assert provider.calls[-1][1]==[]
+    assert platform.runner.conversation_memory().load(session)[-2]['_connections']==[]
+    list(platform.runner.run_conversation('Mail only','demo:office',connections=['imap'],provider=provider))
+    assert {t['function']['name'] for t in provider.calls[-1][1]}=={'imap_read'}
+
+
+def test_plain_chat_requires_confirmation_before_mail_read(platform,monkeypatch):
+    class MailProvider:
+        def chat(self,messages,tools):
+            if any(m['role']=='tool' for m in messages):return {'role':'assistant','content':'finished'}
+            assert any(t['function']['name']=='imap_read' for t in tools)
+            return {'role':'assistant','content':None,'tool_calls':[{'id':'mail','type':'function','function':{'name':'imap_read','arguments':'{"folder":"INBOX","query":"ALL","limit":1}'}}]}
+    platform.config.connections.imap.enabled=True
+    read=[]
+    monkeypatch.setattr(platform.runner.builtins,'run',lambda *a:read.append(a) or {'messages':[]})
+    list(platform.runner.run_conversation('read','demo:office',provider=MailProvider(),confirm=lambda _:False))
+    assert read==[]
+    list(platform.runner.run_conversation('read','demo:office',provider=MailProvider(),confirm=lambda _:True))
+    assert read[0][0]=='imap_read'
