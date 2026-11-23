@@ -16,10 +16,14 @@ def public_address(host, port):
 
 class Text(HTMLParser):
     def __init__(self):
-        super().__init__(); self.hidden = 0; self.parts = []
+        super().__init__(); self.hidden = 0; self.parts = []; self.feeds = []
 
     def handle_starttag(self, tag, attrs):
         if tag in ('script', 'style', 'noscript'): self.hidden += 1
+        if tag == 'link':
+            attributes = dict(attrs)
+            if attributes.get('type') in ('application/rss+xml', 'application/atom+xml') and attributes.get('href'):
+                self.feeds.append(attributes['href'])
 
     def handle_endtag(self, tag):
         if tag in ('script', 'style', 'noscript'): self.hidden = max(0, self.hidden - 1)
@@ -51,14 +55,29 @@ def read_page(url):
                 url = urljoin(url, location); continue
             if response.status != 200: raise ValueError(f"Страница ответила HTTP {response.status}")
             mime = response.getheader('Content-Type', '').split(';')[0].lower()
-            if mime not in ('text/html', 'text/plain', 'application/xhtml+xml'):
-                raise ValueError("Веб-чтение поддерживает HTML и текстовые страницы")
+            xml_types = ('application/rss+xml', 'application/atom+xml', 'text/xml', 'application/xml')
+            if mime not in ('text/html', 'text/plain', 'application/xhtml+xml', *xml_types):
+                raise ValueError("Веб-чтение поддерживает HTML, текст и RSS/Atom")
             raw = response.read(2_000_001)
             if len(raw) > 2_000_000: raise ValueError("Страница превышает 2 МБ")
             charset = response.headers.get_content_charset() or 'utf-8'
             text = raw.decode(charset, errors='replace')
-            if mime != 'text/plain':
+            if mime in xml_types:
+                from defusedxml.ElementTree import fromstring
+                import feedparser
+                try: document = fromstring(raw)
+                except Exception as exc: raise ValueError('Некорректная или небезопасная RSS/Atom-лента') from exc
+                if document.tag.rsplit('}',1)[-1].lower() not in ('rss','feed','rdf'):
+                    raise ValueError('XML-документ не является RSS/Atom-лентой')
+                feed = feedparser.parse(raw)
+                parts = [feed.feed.get('title', '')]
+                for item in feed.entries[:30]:
+                    summary = Text(); summary.feed(item.get('summary', ''))
+                    parts.extend([item.get('title',''), item.get('link',''), '\n'.join(summary.parts)])
+                text = '\n'.join(parts)
+            elif mime != 'text/plain':
                 parser = Text(); parser.feed(text); text = '\n'.join(parser.parts)
+                for link in parser.feeds[:10]:text += '\nRSS/Atom: ' + urljoin(url,link)
             return {'url': url, 'text': text[:30000], 'truncated': len(text) > 30000, 'untrusted': True}
         finally:
             conn.close()

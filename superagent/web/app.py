@@ -9,6 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -35,8 +36,11 @@ class SkillTest(SkillDraft):
 
 
 class ChatRequest(StrictModel):
-    agent: str
+    agent: str | None = None
+    conversation: bool = False
+    model: str = Field(default="demo:office", pattern=r"^[a-z][a-z0-9_-]*:.+$")
     message: str = Field(min_length=1, max_length=100_000)
+    transport: Literal["stream", "poll"] = "stream"
     web_enabled: bool = False
     images: list[str] = Field(default_factory=list, max_length=4)
 
@@ -47,6 +51,11 @@ class ChatRequest(StrictModel):
         return validate_images(values)
 
     session_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,80}$")
+
+
+class ImportConversation(StrictModel):
+    agent: str
+    session_id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,80}$')
 
 
 class Decision(StrictModel):
@@ -75,6 +84,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     streams_lock = threading.Lock()
     active_streams: set[threading.Event] = set()
     stream_users = {}
+    poll_runs = {}
 
     def revoke_streams(uid):
         with streams_lock:
@@ -290,6 +300,13 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             save_models(service,result['name'],result['base'],result['models'],result['expected'])
         return JSONResponse({'saved':True,'models':result['models']}, headers={'Cache-Control':'no-store'})
 
+    @app.get('/api/connection-examples')
+    def connection_examples():
+        from superagent.integrations.catalog import EXAMPLES
+        examples = {**EXAMPLES, 'web_read': {'url': 'https://example.com'}}
+        examples['imap_read'] = {'folder': next(iter(service.config.connections.imap.folders), 'INBOX'), 'query': 'ALL', 'limit': 5}
+        return examples
+
     @app.post("/api/connections/{name}/test")
     def connection_test(name: str, draft: dict):
         from superagent.integrations.catalog import BUILTINS
@@ -375,6 +392,24 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
               limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
         return service.audit.query(agent, skill, status, date, limit, offset)
 
+    @app.get('/api/conversations')
+    def conversations():
+        memory = service.runner.conversation_memory()
+        items = [{**row, 'scope': 'conversation'} for row in memory.sessions('__conversation__')]
+        service.registry.scan()
+        for agent in service.registry.agents.values():
+            items.extend({**row, 'scope': 'agent'} for row in service.runner.memory(agent).sessions(agent.name))
+        return sorted(items, key=lambda row: row['created'], reverse=True)[:100]
+
+    @app.post('/api/conversations/import')
+    def import_conversation(draft: ImportConversation):
+        from superagent.core.conversations import import_agent_history
+        return {'session_id': import_agent_history(service, draft.agent, draft.session_id)}
+
+    @app.get('/api/conversations/{session_id}')
+    def conversation_history(session_id: str):
+        return service.runner.conversation_memory().load(session_id)
+
     @app.get("/api/sessions/{agent}")
     def sessions(agent: str):
         entity = service.registry.build(agent)
@@ -399,18 +434,63 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             item.event.set()
         return {"ok": True}
 
+    def find_poll_run(run_id, request):
+        with streams_lock:
+            item = poll_runs.get(run_id)
+        if item is None or item['owner'] != (request.state.user['id'] if auth else None):
+            raise HTTPException(404, 'Запуск не найден или истёк')
+        return item
+
+    @app.get('/api/chat/runs/{run_id}')
+    def poll_chat(run_id: str, request: Request):
+        item = find_poll_run(run_id, request)
+        out = []
+        for _ in range(256):
+            try: event = item['events'].get_nowait()
+            except queue.Empty: break
+            if event is not None: out.append(event)
+        done = item['done'].is_set() and item['events'].empty()
+        if done:
+            with streams_lock: poll_runs.pop(run_id, None)
+            if item.get('expiry'): item['expiry'].cancel()
+        return JSONResponse({'events': out, 'done': done}, headers={'Cache-Control': 'no-store'})
+
+    @app.post('/api/chat/runs/{run_id}/cancel')
+    def cancel_poll_chat(run_id: str, request: Request):
+        item = find_poll_run(run_id, request)
+        item['cancel'].set()
+        return {'ok': True}
+
     @app.post("/api/chat")
     async def chat(draft: ChatRequest, request: Request):
-        service.registry.build(draft.agent)
+        if draft.agent: service.registry.build(draft.agent)
+        elif not draft.conversation: raise ValueError('Выберите агента или обычный чат')
+        if draft.conversation and not draft.agent:
+            from superagent.core.providers.factory import make_provider
+            make_provider(draft.model, service.config)
         from superagent.auth import RevocableSessionEvent
         cancellation = RevocableSessionEvent(auth,request.cookies.get('session')) if auth else threading.Event()
         with streams_lock:
             if len(active_streams) >= 4:
                 raise HTTPException(429, "Too many active runs")
+            if draft.transport == 'poll' and len(poll_runs) >= 64:
+                raise HTTPException(429, 'Слишком много запусков. Повторите позже.')
             active_streams.add(cancellation)
             stream_users[cancellation] = request.state.user["id"] if auth else None
         events = queue.Queue(maxsize=512)
         ids = set()
+        run_done = threading.Event()
+        run_id = uuid4().hex
+        if draft.transport == 'poll':
+            with streams_lock:
+                poll_runs[run_id] = {'owner': request.state.user['id'] if auth else None, 'events': events, 'cancel': cancellation, 'done': run_done}
+            def expire():
+                cancellation.set()
+                with streams_lock: poll_runs.pop(run_id, None)
+            expiry = threading.Timer(900, expire)
+            expiry.daemon = True
+            with streams_lock: poll_runs[run_id]['expiry'] = expiry
+            expiry.start()
 
         def emit(event):
             while not cancellation.is_set():
@@ -435,7 +515,11 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
         def worker():
             try:
-                for event in service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled):
+                if draft.conversation:
+                    run = service.runner.run_conversation(draft.message, draft.model, attached_agent=draft.agent, session_id=draft.session_id, confirm=confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled)
+                else:
+                    run = service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled)
+                for event in run:
                     if cancellation.is_set():
                         break
                     if event["type"] == "confirmation":
@@ -447,6 +531,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
                 emit({"type": "error", "error": service.audit.redact(str(exc))})
             finally:
                 emit(None)
+                run_done.set()
                 with pending_lock:
                     for id_ in ids:
                         pending.pop(id_, None)
@@ -455,6 +540,9 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
                     stream_users.pop(cancellation, None)
 
         worker_context = contextvars.copy_context()
+        if draft.transport == 'poll':
+            threading.Thread(target=lambda: worker_context.run(worker), daemon=True).start()
+            return JSONResponse({'run_id': run_id}, headers={'Cache-Control': 'no-store'})
         async def stream():
             threading.Thread(target=lambda: worker_context.run(worker), daemon=True).start()
             try:
