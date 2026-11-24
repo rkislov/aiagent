@@ -20,13 +20,16 @@ def plain(value):
 
 
 class Hub(WorkTools,Workflows):
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, config, *, root=None, registry=None):
+        self.config, self.root, self.registry = config, root, registry
 
-    def prepare_write(self,name,payload):
+    def prepare_write(self,name,payload, *, model=None):
         from .task_writes import WritePlan, WRITE_TOOLS
         if name not in WRITE_TOOLS:raise ValueError('Неизвестная операция записи')
         validate_payload(payload,BUILTINS[name].inputs)
+        if name in ('schedule_save','schedule_control'):
+            from .schedule_tools import SchedulePlan
+            return SchedulePlan(self,name,payload,model=model)
         snapshot=Hub(self.config.model_copy(deep=True))
         if name=='confluence_publish_release':
             from .confluence_publish import ConfluencePublishPlan
@@ -37,6 +40,13 @@ class Hub(WorkTools,Workflows):
         from .task_writes import WRITE_TOOLS
         if name in WRITE_TOOLS:raise PermissionError('Запись выполняется только через подтверждённый план')
         validate_payload(payload, BUILTINS[name].inputs)
+        if name == 'dialog_search':
+            if self.root is None or self.registry is None:raise ValueError('Поиск диалогов доступен только в пространстве пользователя')
+            from superagent.core.dialog_search import search_dialogs
+            return search_dialogs(self.root,self.registry,payload['query'],payload['limit'])
+        if name == 'schedule_list':
+            from .schedule_tools import list_schedules
+            return list_schedules(self)
         if name == 'web_read':
             from .web_read import read_page
             return read_page(payload['url'])

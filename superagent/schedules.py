@@ -1,5 +1,6 @@
 """Persistent per-workspace schedules. Background runs never approve protected actions."""
 import json
+import hashlib
 import sqlite3
 import threading
 import time
@@ -14,7 +15,9 @@ from .gateway.models import StrictModel, NAME
 
 class Schedule(StrictModel):
     name: str = Field(min_length=1, max_length=100)
-    agent: str = Field(pattern=NAME)
+    agent: str = Field(default='', pattern=r'^$|'+NAME)
+    model: str = Field(default='demo:office', pattern=r'^[a-z][a-z0-9_-]*:.+$')
+    connections: list[str] | None = Field(default=None, max_length=8)
     message: str = Field(min_length=1, max_length=20000)
     mode: Literal['once','interval','daily','weekly'] = 'daily'
     start_at: datetime | None = None
@@ -73,13 +76,30 @@ class Store:
         with self.connect() as db:
             return [{**json.loads(r['payload']), 'id':r['id'], 'next_run':r['next_run'], 'status':r['status'], 'last_run':r['last_run'], 'session':r['session'], 'result':r['result'], 'enabled':bool(r['enabled'])} for r in db.execute('SELECT * FROM jobs WHERE deleted=0 ORDER BY next_run')]
 
-    def save(self, draft, id_=None):
-        now=time.time(); next_run=draft.next_time(now, initial=True)
+    @staticmethod
+    def signature(row):
+        return hashlib.sha256(json.dumps([row[key] for key in ('payload','enabled','next_run','deleted')]).encode()).hexdigest()
+
+    def checked_row(self, db, id_, expected=None):
+        row=db.execute('SELECT * FROM jobs WHERE id=? AND deleted=0',(id_,)).fetchone()
+        if row is None:raise ValueError('Расписание не найдено')
+        if expected is not None and self.signature(row)!=expected:
+            raise ValueError('Расписание изменилось. Нужны новый предпросмотр и подтверждение.')
+        return row
+
+    def snapshot(self, id_):
+        with self.connect() as db:
+            row=self.checked_row(db,id_)
+            return {'task':{**json.loads(row['payload']),'enabled':bool(row['enabled'])},'signature':self.signature(row),'status':row['status'],'next_run':row['next_run']}
+
+    def save(self, draft, id_=None, *, expected=None, planned_next=None):
+        now=time.time(); next_run=planned_next if planned_next is not None else draft.next_time(now, initial=True)
+        if draft.enabled and next_run<=now:raise ValueError('Время запуска уже прошло. Подготовьте новое подтверждение.')
+        if not draft.enabled:next_run=None
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if id_:
-                row=db.execute('SELECT status FROM jobs WHERE id=? AND deleted=0',(id_,)).fetchone()
-                if row is None: raise ValueError('Расписание не найдено')
+                row=self.checked_row(db,id_,expected)
                 if row['status']=='running': raise ValueError('Дождитесь завершения текущего запуска')
                 db.execute('UPDATE jobs SET payload=?,enabled=?,next_run=? WHERE id=?',(draft.model_dump_json(),draft.enabled,next_run,id_))
             else:
@@ -88,18 +108,21 @@ class Store:
                 db.execute("INSERT INTO jobs VALUES(?,?,?,?,'waiting',NULL,NULL,'',0)",(id_,draft.model_dump_json(),draft.enabled,next_run))
         return id_
 
-    def toggle(self, id_, enabled):
+    def toggle(self, id_, enabled, *, expected=None, planned_next=None):
         with self.connect() as db:
-            r=db.execute('SELECT payload,status FROM jobs WHERE id=? AND deleted=0',(id_,)).fetchone()
-            if r is None: raise ValueError('Расписание не найдено')
+            db.execute('BEGIN IMMEDIATE')
+            r=self.checked_row(db,id_,expected)
             draft=Schedule.model_validate_json(r['payload'])
             if enabled and draft.mode=='once': raise ValueError('Создайте новое одноразовое расписание с будущей датой')
-            next_run=draft.next_time(time.time()) if enabled else None
+            next_run=(planned_next if planned_next is not None else draft.next_time(time.time())) if enabled else None
+            if enabled and next_run<=time.time():raise ValueError('Время запуска уже прошло. Подготовьте новое подтверждение.')
             db.execute('UPDATE jobs SET enabled=?,next_run=? WHERE id=?',(enabled,next_run,id_))
 
-    def delete(self,id_):
+    def delete(self,id_, *, expected=None):
         with self.connect() as db:
-            db.execute('UPDATE jobs SET deleted=1,enabled=0 WHERE id=?',(id_,))
+            db.execute('BEGIN IMMEDIATE')
+            self.checked_row(db,id_,expected)
+            db.execute('UPDATE jobs SET deleted=1,enabled=0,next_run=NULL WHERE id=?',(id_,))
 
     def recover(self):
         with self.connect() as db:
@@ -131,7 +154,8 @@ def execute_due(service, stop):
     def approve(event):
         return draft.allow_reads and event['skill'] in BUILTINS and event['skill'] not in WRITE_TOOLS and event['skill'] != 'ssh_run'
     try:
-        for event in service.runner.run(draft.agent,draft.message,session,confirm=approve,cancelled=Cancel(),web_enabled=draft.web_enabled):
+        run = (service.runner.run(draft.agent,draft.message,session,confirm=approve,cancelled=Cancel(),web_enabled=draft.web_enabled) if draft.agent else service.runner.run_conversation(draft.message,draft.model,session_id=session,confirm=approve,cancelled=Cancel(),web_enabled=draft.web_enabled,connections=draft.connections))
+        for event in run:
             if event['type']=='done':result=event.get('content','')
             elif event['type']=='error':status='error';result=event['error']
             elif event['type']=='skill_result' and event.get('status')=='denied':status='needs_confirmation'
@@ -140,7 +164,7 @@ def execute_due(service, stop):
         status='error';result=service.audit.redact(str(exc))
     if status=='needs_confirmation':result='Защищённое действие отклонено: требуется подтверждение в чате.\n'+result
     store.finish(id_,status,result)
-    service.audit.record(agent=draft.agent,kind='schedule',status=status,output={'schedule':id_,'session':session},session_id=session)
+    service.audit.record(agent=draft.agent or 'plain_chat',kind='schedule',status=status,output={'schedule':id_,'session':session},session_id=session)
 
 
 class Scheduler:
@@ -169,3 +193,13 @@ class Scheduler:
             self.stop.wait(5)
 
     def close(self):self.stop.set();self.thread.join(timeout=2)
+
+
+def validate_target(registry, draft):
+    if draft.agent:
+        registry.build(draft.agent)
+    else:
+        from .core.providers.factory import make_provider
+        from .core.chat_connections import tools_for
+        make_provider(draft.model, registry.config)
+        tools_for(registry.config,draft.connections)

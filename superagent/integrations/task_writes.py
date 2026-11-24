@@ -6,7 +6,7 @@ from datetime import date, datetime
 from urllib.parse import quote
 from .work_tools import numeric
 
-WRITE_TOOLS = {'confluence_publish_release','jira_create_issue','jira_update_issue','redmine_create_issue','redmine_update_issue','bitrix24_create_task','bitrix24_update_task'}
+WRITE_TOOLS = {'schedule_save','schedule_control','confluence_publish_release','jira_create_issue','jira_update_issue','redmine_create_issue','redmine_update_issue','bitrix24_create_task','bitrix24_update_task'}
 
 
 def validate_fields(service, fields, create):

@@ -161,12 +161,19 @@ class Connections(StrictModel):
 class ChannelConfig(StrictModel):
     type: Literal['telegram', 'mattermost', 'xmpp']
     agent: str = 'office_assistant'
+    model: str = Field(default='demo:office', pattern=r'^[a-z][a-z0-9_-]*:.+$')
     enabled: bool = False
     url: str = ''
     username: str = ''
     secret_env: str | None = None
     secret: SecretStr | None = None
     allowed: list[str] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def normalize_address(self):
+        if self.type == 'mattermost' and self.url:
+            self.url = endpoint_url(self.url if '://' in self.url else 'https://' + self.url)
+        return self
 
     def key(self):
         return (os.environ.get(self.secret_env, '') if self.secret_env else '') or (self.secret.get_secret_value() if self.secret else '')

@@ -21,7 +21,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from superagent.gateway.models import Agent, StrictModel
 from superagent.gateway.registry import parse_skill
 from superagent.service import Platform
-from superagent.schedules import Schedule, Store, Scheduler
+from superagent.schedules import Schedule, Store, Scheduler, validate_target
 
 
 class SkillDraft(StrictModel):
@@ -97,7 +97,12 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     async def lifespan(app):
         scheduler = Scheduler(owner, auth)
         scheduler.start()
+        from superagent.channel_runtime import ChannelSupervisor
+        channel_manager=ChannelSupervisor(owner,auth)
+        app.state.channel_manager=channel_manager
+        channel_manager.start()
         yield
+        channel_manager.close()
         scheduler.close()
         with streams_lock:
             for cancellation in active_streams:
@@ -209,12 +214,12 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.post('/api/schedules')
     def add_schedule(draft: Schedule):
-        service.registry.build(draft.agent)
+        validate_target(service.registry, draft)
         return {'id': Store(service.root).save(draft)}
 
     @app.put('/api/schedules/{id_}')
     def edit_schedule(id_: str, draft: Schedule):
-        service.registry.build(draft.agent)
+        validate_target(service.registry, draft)
         return {'id': Store(service.root).save(draft, id_)}
 
     @app.post('/api/schedules/{id_}/toggle')
@@ -226,6 +231,19 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def delete_schedule(id_: str):
         Store(service.root).delete(id_)
         return {'ok': True}
+
+    @app.get('/api/channels/status')
+    def channel_status():
+        manager=getattr(app.state,'channel_manager',None)
+        return manager.status(service) if manager else []
+
+    @app.post('/api/channels/{name}/test')
+    def channel_test(name: str):
+        from superagent.channels import test_channel
+        if name not in service.config.channels:raise ValueError('Канал не найден')
+        try:return test_channel(service,service.config.channels[name])
+        except ValueError:raise
+        except Exception:raise ValueError('Не удалось подключиться к каналу. Проверьте адрес, токен и доступ бота.') from None
 
     @app.get("/api/settings")
     def settings():

@@ -20,7 +20,7 @@ class Platform:
         from .integrations.hub import Hub
         self.runner = AgentRunner(self.registry, self.audit)
 
-        self.runner.builtins = Hub(self.config)
+        self.runner.builtins = Hub(self.config, root=self.root, registry=self.registry)
 
     def close(self):
         self.audit.close()

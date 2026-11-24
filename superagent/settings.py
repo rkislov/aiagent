@@ -34,6 +34,9 @@ def update(service, draft):
         for entry in credential_entries(candidate):
             for field in ('api_key_env','password_env','secret_env'):
                 if hasattr(entry, field): setattr(entry, field, None)
+    from .channels import validate_channel
+    for entry in candidate.channels.values():
+        if entry.enabled:validate_channel(service,entry,config=candidate)
     atomic_write(service.root / 'config.yaml', yaml.safe_dump(unpack(candidate.model_dump()), allow_unicode=True, sort_keys=False))
     service.config = candidate
     service.registry.config = candidate

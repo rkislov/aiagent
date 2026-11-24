@@ -4,6 +4,8 @@ import time
 from fastapi.testclient import TestClient
 from superagent.web.app import create_app
 from superagent.core.conversations import import_agent_history
+from superagent.integrations.schedule_tools import SCHEDULE_TOOLS
+CHAT_UTILITIES=SCHEDULE_TOOLS|{'dialog_search'}
 
 
 class Recorder:
@@ -17,12 +19,12 @@ def test_attach_detach_preserves_history_and_removes_tools(platform):
     provider=Recorder()
     events=list(platform.runner.run_conversation('Remember secret-context-123','demo:office',provider=provider))
     session=events[0]['session_id']
-    assert provider.calls[-1][1]==[]
+    assert {t['function']['name'] for t in provider.calls[-1][1]}==CHAT_UTILITIES
     list(platform.runner.run_conversation('Use that context','demo:office',attached_agent='office_assistant',session_id=session,provider=provider))
     assert 'secret-context-123' in json.dumps(provider.calls[-1][0])
     assert 'email_filter' in {t['function']['name'] for t in provider.calls[-1][1]}
     list(platform.runner.run_conversation('Continue without agent','demo:office',session_id=session,provider=provider))
-    assert provider.calls[-1][1]==[]
+    assert {t['function']['name'] for t in provider.calls[-1][1]}==CHAT_UTILITIES
     assert 'Use that context' in json.dumps(provider.calls[-1][0])
     assert not any(k.startswith('_') for m in provider.calls[-1][0] for k in m)
     history=platform.runner.conversation_memory().load(session)
@@ -120,10 +122,10 @@ def test_plain_chat_exposes_enabled_read_connections_only(platform):
     assert not {'ssh_run','jira_create_issue','jira_update_issue','caldav_read','web_search'}&offered
     session=events[0]['session_id']
     list(platform.runner.run_conversation('Disable sources','demo:office',session_id=session,connections=[],provider=provider))
-    assert provider.calls[-1][1]==[]
+    assert {t['function']['name'] for t in provider.calls[-1][1]}==CHAT_UTILITIES
     assert platform.runner.conversation_memory().load(session)[-2]['_connections']==[]
     list(platform.runner.run_conversation('Mail only','demo:office',connections=['imap'],provider=provider))
-    assert {t['function']['name'] for t in provider.calls[-1][1]}=={'imap_read'}
+    assert {t['function']['name'] for t in provider.calls[-1][1]}=={'imap_read'}|CHAT_UTILITIES
 
 
 def test_plain_chat_requires_confirmation_before_mail_read(platform,monkeypatch):

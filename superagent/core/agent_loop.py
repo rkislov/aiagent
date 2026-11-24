@@ -51,9 +51,11 @@ class AgentRunner:
             from .chat_connections import tools_for
             from datetime import datetime
             from zoneinfo import ZoneInfo
-            selected.skills = tools_for(self.registry.config, connections)
+            selected.skills = [*tools_for(self.registry.config, connections), 'schedule_list', 'schedule_save', 'schedule_control', 'dialog_search']
             selected.instructions += '\nТекущее время: ' + datetime.now(ZoneInfo('Europe/Moscow')).isoformat()
             selected.instructions += '\nИспользуй инструменты включённых подключений, когда пользователь просит прочитать почту, календарь или другой настроенный источник. Не заявляй об отсутствии доступа к источнику, если соответствующий инструмент предоставлен. Перед чтением дождись подтверждения пользователя. Секреты подключений обрабатывает сервер: не запрашивай пароли в чате.'
+            selected.instructions += '\nДля поиска по предыдущим диалогам пользователя используй dialog_search, сохраняй точные названия и ID, не выдавай найденный фрагмент за полный текст разговора.'
+            selected.instructions += '\nДля заданий по расписанию используй schedule_list, schedule_save и schedule_control. Сначала просмотри существующие задания и доступных исполнителей. Без агента используй текущую модель '+model+'. Уточняй время, периодичность и часовой пояс. Не заявляй о сохранении, пока saved=true. Автоматическое чтение источников разрешается только в явном плане. Запись и SSH не получают фонового подтверждения.'
         session_id = session_id or uuid4().hex
         key = ('__conversation__', session_id)
         with self._guard:
@@ -163,8 +165,10 @@ class AgentRunner:
                     from superagent.gateway.models import validate_payload
                     validate_payload(payload, skill.inputs)
                     from superagent.integrations.task_writes import WRITE_TOOLS
-                    write_plan = self.builtins.prepare_write(skill_name,payload) if skill_name in WRITE_TOOLS and self.builtins else None
+                    write_plan = self.builtins.prepare_write(skill_name,payload,model=agent.model) if skill_name in WRITE_TOOLS and self.builtins else None
                     needs_confirmation = skill_name in __import__("superagent.integrations.catalog", fromlist=["BUILTINS"]).BUILTINS or skill.irreversible or skill.permissions.subprocess or bool(skill.permissions.filesystem or skill.permissions.network) or skill_name in agent.confirmation_required
+                    if skill_name == 'schedule_list' and skill_name not in agent.confirmation_required:
+                        needs_confirmation = False
                     if web_enabled is True and skill_name in ('web_search', 'web_read') and skill_name not in agent.confirmation_required:
                         needs_confirmation = False
                     if needs_confirmation:
