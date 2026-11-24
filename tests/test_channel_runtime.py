@@ -47,6 +47,7 @@ def test_mattermost_uses_plain_chat_and_does_not_reply_to_self(platform,monkeypa
     def handler(r):
         requests.append(r)
         if r.url.path.endswith('/users/me'):return httpx.Response(200,json={'id':'self'})
+        if r.url.path.endswith('/users/me/teams'):return httpx.Response(200,json=[])
         if r.method=='GET':return httpx.Response(200,json={'posts':{
             'a':{'id':'a','user_id':'self','create_at':100,'message':'ignore'},
             'b':{'id':'b','user_id':'owner','create_at':101,'message':'hello'},

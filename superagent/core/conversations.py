@@ -16,4 +16,5 @@ def import_agent_history(service, name, session_id):
         for message in history:
             saved={**message,'_speaker':name,'_model':agent.model} if message['role']!='user' else message
             db.execute('INSERT INTO messages(session_id,payload) VALUES(?,?)',(new_id,json.dumps(saved,ensure_ascii=False)))
+    memory.web(new_id, old.web(session_id))
     return new_id
