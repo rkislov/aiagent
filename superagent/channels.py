@@ -7,11 +7,11 @@ import json
 import httpx
 
 
-def reply(service, config, sender, text, *, confirm=None, cancelled=None):
-    session = hashlib.sha256((config.type + ':' + sender).encode()).hexdigest()
+def reply(service, config, sender, text, *, confirm=None, cancelled=None, session_id=None, web_enabled=None):
+    session = session_id or hashlib.sha256((config.type + ':' + sender).encode()).hexdigest()
     result = ''
     confirm = confirm or (lambda _:False)
-    events=(service.runner.run(config.agent,text,session,confirm=confirm,cancelled=cancelled) if config.agent else service.runner.run_conversation(text,config.model,session_id=session,confirm=confirm,cancelled=cancelled))
+    events=(service.runner.run(config.agent,text,session,confirm=confirm,cancelled=cancelled,web_enabled=web_enabled) if config.agent else service.runner.run_conversation(text,config.model,session_id=session,confirm=confirm,cancelled=cancelled,web_enabled=web_enabled))
     for event in events:
         if event['type'] == 'done': result = event['content']
         elif event['type'] == 'error': result = event['error']
@@ -21,7 +21,9 @@ def reply(service, config, sender, text, *, confirm=None, cancelled=None):
 def validate_channel(service,cfg, *, require_enabled=True, config=None):
     if require_enabled and not cfg.enabled:raise ValueError('Канал выключен')
     if not cfg.key():raise ValueError('Укажите токен бота / пароль')
-    if require_enabled and not cfg.allowed:raise ValueError('Укажите разрешённые chat ID / channel ID / JID')
+    if require_enabled and not cfg.allowed and not (cfg.type=='mattermost' and cfg.allow_direct_messages and cfg.owner_user_id):raise ValueError('Укажите разрешённые chat ID / channel ID / JID')
+    if cfg.allow_direct_messages and (cfg.type!='mattermost' or not cfg.owner_user_id or cfg.agent):
+        raise ValueError('Для общих личных чатов укажите владельца и выберите обычный чат')
     if cfg.agent:service.registry.build(cfg.agent)
     else:
         from .core.providers.factory import make_provider
@@ -120,11 +122,18 @@ def run(service, name, *, stop=None, config=None, on_state=None):
             client.headers['Authorization'] = 'Bearer ' + cfg.key()
             me = client.get(base + '/users/me'); me.raise_for_status()
             own_id = me.json()['id']
+            register_commands(client, base, cfg)
             on_state('running')
-            cursors={channel:int(time.time()*1000) for channel in cfg.allowed}
+            started_at=int(time.time()*1000)
+            cursors={channel:started_at for channel in cfg.allowed}
             seen = set()
             while not stop.is_set():
-                for channel in cfg.allowed:
+                channels = list(cfg.allowed)
+                if cfg.allow_direct_messages:
+                    joined=client.get(base+'/users/me/channels');joined.raise_for_status()
+                    channels = list(dict.fromkeys(channels+[row['id'] for row in joined.json() if row.get('type')=='D']))
+                for channel in channels:
+                    cursors.setdefault(channel,started_at)
                     response = client.get(base + '/channels/' + channel + '/posts', params={'since': cursors[channel]})
                     response.raise_for_status()
                     posts=sorted(response.json().get('posts', {}).values(),key=lambda p:p['create_at'])
@@ -133,9 +142,66 @@ def run(service, name, *, stop=None, config=None, on_state=None):
                         seen.add(post['id'])
                         post={**post,'channel_id':channel}
                         confirm=mattermost_confirmation(client,base,cfg,post,seen,stop,service.config.confirmation_timeout)
-                        answer = reply(service, cfg, name + ':' + channel + ':' + post['user_id'], post['message'],confirm=confirm,cancelled=stop)
+                        answer = mattermost_reply(service, name, cfg, post, confirm=confirm, cancelled=stop)
                         if stop.is_set():break
-                        client.post(base + '/posts', json={'channel_id': channel, 'root_id': post.get('root_id') or post['id'], 'message': answer[:15000]}).raise_for_status()
+                        client.post(base + '/posts', json={'channel_id': channel, 'root_id': post.get('root_id') or post['id'], 'message': answer[:15000], 'props':command_buttons(cfg)}).raise_for_status()
                     if posts:cursors[channel]=max(p['create_at'] for p in posts)
                 if len(seen) > 10000: seen.clear()
                 stop.wait(3)
+
+
+HELP = ('**Команды помощника**\n/ai help — помощь\n/ai new — новый диалог\n'
+        '/ai chats [текст] — список и поиск своих диалогов\n/ai use ID — продолжить свой диалог\n'
+        '/ai web on|off|status — веб-поиск и чтение страниц')
+
+
+def register_commands(client, base, cfg):
+    # TMS mailbox commands do not require an admin role or an external callback URL.
+    teams=client.get(base+'/users/me/teams');teams.raise_for_status()
+    for team in teams.json():
+        response=client.post(base+'/commands',json={'team_id':team['id'],'trigger':cfg.command_trigger,
+            'auto_complete':True,'auto_complete_desc':'Помощник: диалоги и веб',
+            'auto_complete_hint':'help | new | chats [поиск] | use ID | web on/off/status',
+            'display_name':'AI помощник','tms_bot_command':True})
+        # Original Mattermost may not implement this transport; keep plain DM working.
+        if response.status_code not in (403,404,405,501): response.raise_for_status()
+
+
+def mattermost_reply(owner, name, cfg, post, *, confirm=None, cancelled=None):
+    from .channel_context import user_service, identity_key, Dialogs
+    service=user_service(owner,name,cfg,post['user_id'])
+    identity=identity_key(name,cfg,post['user_id'])
+    dialogs=Dialogs(service,identity)
+    sender=name+':'+post['channel_id']+':'+post['user_id']
+    initial=hashlib.sha256((cfg.type+':'+sender).encode()).hexdigest() if service is owner else None
+    session=dialogs.current(initial)
+    text=post['message'].strip()
+    prefix='/'+cfg.command_trigger
+    if text==prefix or text.startswith(prefix+' '):
+        command,_,argument=text[len(prefix):].strip().partition(' ')
+        argument=argument.strip()
+        if command in ('','help'):return HELP.replace('/ai ',prefix+' ')
+        if command=='new':return 'Создан новый диалог: `'+dialogs.new()+'`. Веб выключен.'
+        if command=='chats':
+            rows=dialogs.list(argument)
+            return ('**Ваши диалоги**\n'+'\n'.join('`'+row['id']+'` — '+row['title'].replace('\n',' ') for row in rows)) if rows else 'Своих диалогов по запросу не найдено.'
+        if command=='use':
+            try: dialogs.use(argument)
+            except ValueError:return 'Свой диалог с таким ID не найден.'
+            return 'Выбран диалог `'+argument+'`. Веб '+('включён' if service.runner.conversation_memory().web(argument) else 'выключен')+'.'
+        if command=='web':
+            if argument not in ('on','off','status',''):return 'Используйте '+prefix+' web on|off|status'
+            enabled=service.runner.conversation_memory().web(session, {'on':True,'off':False}.get(argument))
+            return 'Веб '+('включён' if enabled else 'выключен')+' для текущего диалога.'
+        return HELP.replace('/ai ',prefix+' ')
+    return reply(service,cfg,sender,text,session_id=session,confirm=confirm,cancelled=cancelled)
+
+
+
+def command_buttons(cfg):
+    actions=[]
+    for key,label,command in [('help','Помощь','help'),('new','Новый диалог','new'),('chats','Мои диалоги','chats'),('web_on','Веб вкл.','web on'),('web_off','Веб выкл.','web off')]:
+        actions.append({'id':'ai_'+key,'name':label,'type':'button','integration':{
+            'url':cfg.url.rstrip('/')+'/api/v4/tms/bot-command',
+            'context':{'command':'/'+cfg.command_trigger+' '+command}}})
+    return {'attachments':[{'actions':actions}]}

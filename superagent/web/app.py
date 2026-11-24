@@ -35,6 +35,10 @@ class SkillTest(SkillDraft):
     confirmed: bool = False
 
 
+class WebSetting(StrictModel):
+    web_enabled: bool
+
+
 class ChatRequest(StrictModel):
     agent: str | None = None
     conversation: bool = False
@@ -42,7 +46,7 @@ class ChatRequest(StrictModel):
     model: str = Field(default="demo:office", pattern=r"^[a-z][a-z0-9_-]*:.+$")
     message: str = Field(min_length=1, max_length=100_000)
     transport: Literal["stream", "poll"] = "stream"
-    web_enabled: bool = False
+    web_enabled: bool | None = None
     images: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("images")
@@ -425,6 +429,18 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def import_conversation(draft: ImportConversation):
         from superagent.core.conversations import import_agent_history
         return {'session_id': import_agent_history(service, draft.agent, draft.session_id)}
+
+    @app.get('/api/conversations/{session_id}/settings')
+    def conversation_settings(session_id: str):
+        return {'web_enabled': service.runner.conversation_memory().web(session_id)}
+
+    @app.put('/api/conversations/{session_id}/settings')
+    def update_conversation_settings(session_id: str, draft: WebSetting):
+        memory=service.runner.conversation_memory()
+        with memory.connect() as db:
+            if not db.execute('SELECT 1 FROM sessions WHERE id=?', (session_id,)).fetchone():
+                raise HTTPException(404, 'Dialog not found')
+        return {'web_enabled': memory.web(session_id, draft.web_enabled)}
 
     @app.get('/api/conversations/{session_id}')
     def conversation_history(session_id: str):

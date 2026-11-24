@@ -168,6 +168,9 @@ class ChannelConfig(StrictModel):
     secret_env: str | None = None
     secret: SecretStr | None = None
     allowed: list[str] = Field(default_factory=list)
+    owner_user_id: str = ''
+    allow_direct_messages: bool = False
+    command_trigger: str = Field(default='ai', pattern=r'^[a-z][a-z0-9_-]{0,31}$')
 
     @model_validator(mode='after')
     def normalize_address(self):

@@ -7,10 +7,10 @@ from .gateway.registry import Registry
 
 
 class Platform:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, config=None):
         self.root = root.resolve()
         (self.root / "data/workspace").mkdir(parents=True, exist_ok=True)
-        self.config = load_config(self.root)
+        self.config = config if config is not None else load_config(self.root)
         if (self.root / '.tenant').exists():
             for entry in credential_entries(self.config):
                 for field in ('api_key_env','password_env','secret_env'):
@@ -23,4 +23,5 @@ class Platform:
         self.runner.builtins = Hub(self.config, root=self.root, registry=self.registry)
 
     def close(self):
+        for service in getattr(self, "_channel_users", {}).values(): service.close()
         self.audit.close()
