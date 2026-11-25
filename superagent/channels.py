@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import threading
 import json
+import re
+import secrets
 import httpx
 
 
@@ -47,19 +49,24 @@ def mattermost_confirmation(client,base,cfg,original,seen,stop,timeout):
     reads={name for _,tools in CONNECTIONS.values() for name in tools}|{'web_read','web_search','dialog_search'}
     def confirm(event):
         if event['skill'] not in reads:return False
-        code=event['id'][:12]
+        code=str(secrets.randbelow(900)+100)
         root=original.get('root_id') or original['id']
-        message='Разрешить чтение **'+event['skill']+'**?\n```json\n'+json.dumps(event['input'],ensure_ascii=False,indent=2)+'\n```\nДля подтверждения ответьте в этом диалоге: **РАЗРЕШАЮ '+code+'**. Для отказа: **ОТМЕНА '+code+'**.'
+        message='Разрешить чтение **'+event['skill']+'**?\n```json\n'+json.dumps(event['input'],ensure_ascii=False,indent=2)+'\n```\nДля подтверждения ответьте только тремя цифрами: **'+code+'**. Для отказа: **ОТМЕНА '+code+'**. Код действует '+str(timeout)+' с; после 3 неверных попыток запрос отменяется.'
         r=client.post(base+'/posts',json={'channel_id':original['channel_id'],'root_id':root,'message':message});r.raise_for_status()
         since=r.json().get('create_at',int(time.time()*1000))
         deadline=time.monotonic()+timeout
+        attempts=0
         while not stop.is_set() and time.monotonic()<deadline:
             r=client.get(base+'/channels/'+original['channel_id']+'/posts',params={'since':since});r.raise_for_status()
-            for post in r.json().get('posts',{}).values():
-                if post['user_id']!=original['user_id'] or post.get('create_at',0)<since:continue
+            for post in sorted(r.json().get('posts',{}).values(),key=lambda p:p.get('create_at',0)):
+                if post['id'] in seen or post['user_id']!=original['user_id'] or post.get('channel_id',original['channel_id'])!=original['channel_id'] or post.get('create_at',0)<since:continue
                 answer=post.get('message','').strip().casefold()
-                if answer in ('разрешаю '+code,'отмена '+code):
-                    seen.add(post['id']);return answer.startswith('разрешаю ')
+                match=re.fullmatch(r'(?:(разрешаю|отмена)\s+)?([0-9]{3})',answer)
+                if not match:continue
+                seen.add(post['id'])
+                if match[2]==code:return match[1]!='отмена'
+                attempts+=1
+                if attempts>=3:return False
             stop.wait(1)
         return False
     return confirm
