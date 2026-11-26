@@ -24,15 +24,27 @@ def test_skill_validation(platform):
         validate_payload({"messages": [1]}, {"messages": "list[dict]"})
 
 
-def test_build_missing_and_incompatible(platform):
+def test_build_missing_and_independent_tool_fields(platform):
     agent = platform.registry.agents["office_assistant"].model_copy(deep=True)
     agent.skills.append("missing")
     with pytest.raises(ValueError, match="Missing"):
         platform.registry.build(agent.name, agent)
     agent.skills.remove("missing")
     platform.registry.skills["report_gen"].inputs["classified"] = "str"
-    with pytest.raises(ValueError, match="Incompatible"):
-        platform.registry.build(agent.name, agent)
+    assert platform.registry.build(agent.name, agent).name==agent.name
+    # Each call is still checked against that tool's own schema.
+    with pytest.raises(ValueError):validate_payload({'classified':[]},{'classified':'str'})
+
+
+def test_lawyer_and_all_builtin_tools_can_be_saved_together(platform):
+    from fastapi.testclient import TestClient
+    from superagent.web.app import create_app
+    from superagent.integrations.catalog import BUILTINS
+    with TestClient(create_app(platform,authentication=False),base_url='http://localhost') as client:
+        lawyer=client.get('/api/agent-templates/lawyer_rf').json()
+        assert client.put('/api/agents/lawyer_rf',json=lawyer).status_code==200
+        draft=Agent(name='all_tools',model='demo:office',instructions='Проверка независимых схем навыков',skills=list(BUILTINS)).model_dump()
+        assert client.put('/api/agents/all_tools',json=draft).status_code==200
 
 
 def test_registration_reports_errors_and_hot_reload(platform):

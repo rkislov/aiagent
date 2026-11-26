@@ -184,15 +184,15 @@ class ChannelConfig(StrictModel):
 
 class EmbeddingConfig(StrictModel):
     enabled: bool = False
-    provider: str = 'openai'
-    model: str = 'text-embedding-3-small'
+    provider: str = Field(default='openai',min_length=1,max_length=64)
+    model: str = Field(default='text-embedding-3-small',min_length=1,max_length=256)
     dimensions: int = Field(default=0,ge=0,le=8192)
 
 
 class ImageGenerationConfig(StrictModel):
     enabled: bool = True
     provider: str = 'openai'
-    model: str = 'gpt-image-1'
+    model: str = 'gpt-image-2.5-sunburst'
 
 
 class Config(StrictModel):

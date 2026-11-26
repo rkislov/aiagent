@@ -46,7 +46,7 @@ def test_channel(service,cfg):
 
 def mattermost_confirmation(client,base,cfg,original,seen,stop,timeout):
     from .core.chat_connections import CONNECTIONS
-    reads={name for _,tools in CONNECTIONS.values() for name in tools}|{'web_read','web_search','dialog_search','office_read','office_create','office_edit','office_compare','image_generate'}
+    reads={name for _,tools in CONNECTIONS.values() for name in tools}|{'web_read','web_search','dialog_search','office_read','office_create','office_edit','office_compare','image_generate','knowledge_index','knowledge_search','knowledge_forget'}
     def confirm(event):
         if event['skill'] not in reads:return False
         code=str(secrets.randbelow(900)+100)
@@ -159,7 +159,8 @@ def run(service, name, *, stop=None, config=None, on_state=None):
 
 HELP = ('**Команды помощника**\n/ai help — помощь\n/ai new — новый диалог\n'
         '/ai chats [текст] — список и поиск своих диалогов\n/ai use ID — продолжить свой диалог\n'
-        '/ai web on|off|status — веб-поиск и чтение страниц')
+        '/ai web on|off|status — веб-поиск и чтение страниц\n'
+        '/ai knowledge list|off|use ID[,ID] — личные базы знаний')
 
 
 def register_commands(client, base, cfg):
@@ -200,6 +201,19 @@ def mattermost_reply(owner, name, cfg, post, *, confirm=None, cancelled=None):
             if argument not in ('on','off','status',''):return 'Используйте '+prefix+' web on|off|status'
             enabled=service.runner.conversation_memory().web(session, {'on':True,'off':False}.get(argument))
             return 'Веб '+('включён' if enabled else 'выключен')+' для текущего диалога.'
+        if command=='knowledge':
+            from .integrations.knowledge import Knowledge
+            store=Knowledge(service.root)
+            action,_,ids=argument.partition(' ')
+            memory=service.runner.memory(service.registry.build(cfg.agent)) if cfg.agent else service.runner.conversation_memory()
+            if action=='list':return '**Ваши базы знаний**\n'+'\n'.join('`'+row['id']+'` — '+row['name'] for row in store.collections())
+            if action=='off':memory.knowledge(session,[]);return 'Базы знаний отключены для текущего диалога.'
+            if action=='use':
+                try:selected=store.validate_collections([value.strip() for value in ids.split(',') if value.strip()])
+                except ValueError:return 'База не найдена в вашем пространстве. Используйте '+prefix+' knowledge list'
+                memory.knowledge(session,selected)
+                return 'Подключено баз знаний: '+str(len(selected))+'.'
+            return 'Используйте '+prefix+' knowledge list|off|use ID[,ID]'
         return HELP.replace('/ai ',prefix+' ')
     return reply(service,cfg,sender,text,session_id=session,confirm=confirm,cancelled=cancelled)
 

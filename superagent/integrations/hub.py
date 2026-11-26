@@ -20,8 +20,9 @@ def plain(value):
 
 
 class Hub(WorkTools,Workflows):
-    def __init__(self, config, *, root=None, registry=None):
+    def __init__(self, config, *, root=None, registry=None,knowledge_scope=None):
         self.config, self.root, self.registry = config, root, registry
+        self.knowledge_scope=None if knowledge_scope is None else tuple(knowledge_scope)
 
     def prepare_write(self,name,payload, *, model=None):
         from .task_writes import WritePlan, WRITE_TOOLS
@@ -47,7 +48,7 @@ class Hub(WorkTools,Workflows):
         from .knowledge import KNOWLEDGE_TOOLS,run_knowledge
         if name in KNOWLEDGE_TOOLS:
             if self.root is None:raise ValueError('Нужно личное пространство')
-            return run_knowledge(self.root,self.config,name,payload)
+            return run_knowledge(self.root,self.config,name,payload,self.knowledge_scope)
         from .office import OFFICE_TOOLS,run_office
         if name in OFFICE_TOOLS:
             if self.root is None:raise ValueError('Нужно личное пространство документов')

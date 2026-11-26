@@ -1,0 +1,5 @@
+import React from 'react';
+import {BookOpen} from 'lucide-react';
+export default function KnowledgeSelector({collections,selected,onChange,onManage,busy}){
+ return <details className="chat-sources knowledge-selector"><summary><BookOpen size={15}/>{selected.length?'Знания · '+selected.length:'Знания отключены'}</summary><div className="chat-sources-menu"><strong>Знания этого диалога</strong><p>Поиск будет обращаться только к отмеченным личным базам. Прежние сообщения остаются в истории.</p>{collections.map(c=><label className="checkbox-label" key={c.id}><input type="checkbox" checked={selected.includes(c.id)} disabled={busy} onChange={e=>onChange(e.target.checked?[...selected,c.id]:selected.filter(id=>id!==c.id))}/><span>{c.name}<small>{c.documents} документов</small></span></label>)}<button type="button" className="button secondary" disabled={busy} onClick={()=>onChange([])}>Отключить все базы</button><button type="button" className="button primary" disabled={busy} onClick={onManage}>Добавить знания</button></div></details>
+}
