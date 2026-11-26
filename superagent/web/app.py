@@ -147,7 +147,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             response = await call_next(request)
         finally:
             if context_token is not None: current_service.reset(context_token)
-        if request.url.path.startswith("/api/auth/"):
+        if request.url.path=='/' or request.url.path.startswith("/api/auth/"):
             response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
