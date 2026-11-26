@@ -32,18 +32,22 @@ def user_service(owner, name, cfg, user_id):
             (root / '.tenant').touch(mode=0o600)
             for folder in ('agents', 'skills'): (root / folder).mkdir(exist_ok=True)
             provider_name = cfg.model.split(':', 1)[0]
-            provider = owner.config.providers[provider_name].model_copy(deep=True)
+            from .core.providers.pool import resolve_provider
+            provider = resolve_provider(owner.config,provider_name).model_copy(deep=True)
             provider.api_key = SecretStr(provider.key())
             provider.api_key_env = None
             config = Config(providers={provider_name: provider}, model_timeout=owner.config.model_timeout,
                             confirmation_timeout=owner.config.confirmation_timeout)
+            config._model_pool=owner.config._model_pool.copy()
             # No owner connections, including search credentials/indexes, are inherited.
             services[key] = Platform(root, config=config)
         # Rotate only the selected model transport when owner settings change.
         provider_name = cfg.model.split(':', 1)[0]
-        provider = owner.config.providers[provider_name].model_copy(deep=True)
+        from .core.providers.pool import resolve_provider
+        provider = resolve_provider(owner.config,provider_name).model_copy(deep=True)
         provider.api_key = SecretStr(provider.key()); provider.api_key_env = None
         services[key].config.providers = {provider_name: provider}
+        services[key].config._model_pool=owner.config._model_pool.copy()
         if provider.key(): services[key].audit.secrets.append(provider.key())
         return services[key]
 

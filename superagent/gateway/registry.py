@@ -111,14 +111,17 @@ class Registry:
             raise ValueError("Confirmation actions must be attached skills")
         if set(agent.skill_models) - set(agent.skills):
             raise ValueError("Модель назначена неприкреплённому навыку")
+        from superagent.core.providers.pool import resolve_provider
         for ref in agent.skill_models.values():
-            if ':' not in ref or ref.split(':', 1)[0] not in self.config.providers:
+            if ':' not in ref or resolve_provider(self.config,ref.split(':', 1)[0]) is None:
                 raise ValueError("Неизвестная модель навыка")
+        from superagent.core.providers.pool import resolve_provider
         provider, _ = agent.model.split(":", 1)
-        if provider not in self.config.providers:
+        provider_config=resolve_provider(self.config,provider)
+        if provider_config is None:
             raise ValueError(f"Unknown provider: {provider}")
-        if self.config.providers[provider].type not in ("openai", "anthropic", "ollama", "demo"):
-            raise ValueError(f"Unsupported provider type: {self.config.providers[provider].type}")
+        if provider_config.type not in ("openai", "anthropic", "ollama", "demo"):
+            raise ValueError(f"Unsupported provider type: {provider_config.type}")
         from superagent.sandbox.policy import resolve_permissions
         for skill_name in agent.skills:
             resolve_permissions(self.root, self.skills[skill_name].permissions)

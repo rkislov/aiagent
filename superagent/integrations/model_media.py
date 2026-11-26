@@ -10,9 +10,12 @@ import httpx
 
 
 def model_post(config,provider,path,payload,*,limit=20_000_000,timeout=120):
-    cfg=config.providers.get(provider)
+    from superagent.core.providers.pool import resolve_provider
+    from urllib.parse import urlsplit
+    cfg=resolve_provider(config,provider)
     if cfg is None or cfg.type!='openai':raise ValueError('Выберите OpenAI-совместимый провайдер в настройках')
-    if not cfg.key() and not cfg.base_url.startswith(('http://127.0.0.1:','http://localhost:')):raise ValueError('Сохраните API-ключ выбранного провайдера в настройках моделей')
+    if cfg is config._model_pool.get(provider) and payload.get('model') not in cfg.models:raise ValueError('Модель не разрешена в общем каталоге администратора')
+    if not cfg.key() and urlsplit(cfg.base_url).hostname in ('api.openai.com','api.deepseek.com'):raise ValueError('Сохраните API-ключ выбранного провайдера в настройках моделей')
     try:
         with httpx.Client(timeout=timeout,trust_env=False,follow_redirects=False) as client:
             with client.stream('POST',cfg.base_url.rstrip('/')+path,headers={'Authorization':'Bearer '+cfg.key()},json=payload) as response:

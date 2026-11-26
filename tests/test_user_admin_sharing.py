@@ -83,3 +83,26 @@ def test_files_api_does_not_cross_tenants(platform):
   assert c.get(f['url']).status_code==400
   assert c.get('/api/files').json()==[]
   assert c.get('/api/knowledge').json()['documents']==[]
+
+
+def test_shared_model_transport_never_enters_editable_settings(platform):
+ from superagent.settings import update,public
+ from superagent.core.providers.factory import make_provider
+ from superagent.core.providers.pool import resolve_provider
+ from superagent.gateway.config import load_config
+ auth=Auth(platform.root)
+ admin,_,_=enroll(auth,'admin');bob,_,_=enroll(auth,'bobby')
+ a=auth.service(admin)
+ update(a,{'providers':{**public(a.config)['providers'],'openai':{'type':'openai','base_url':'https://api.openai.com/v1','api_key':'shared-model-key','api_key_env':None,'models':['gpt-4.1-mini']}}})
+ b=auth.service(bob)
+ assert b.config.providers['openai'].key()==''
+ assert make_provider('openai:gpt-4.1-mini',b.config).api_key=='shared-model-key'
+ from superagent.core.providers.base import ProviderError
+ with pytest.raises(ProviderError):make_provider('openai:unapproved-model',b.config)
+ assert 'shared-model-key' not in str(public(b.config))
+ draft=public(b.config)
+ draft['providers']['openai']['base_url']='https://attacker.invalid/v1'
+ update(b,draft)
+ assert make_provider('openai:gpt-4.1-mini',b.config).api_key==''
+ assert 'shared-model-key' not in (b.root/'config.yaml').read_text()
+ assert load_config(b.root).providers['openai'].key()==''

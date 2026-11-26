@@ -29,6 +29,7 @@ def update(service, draft):
                 entry.pop(key + '_present', None)
                 if key in old and not entry.get(key): entry[key] = old[key]
     candidate = Config.model_validate({**previous, **draft})
+    candidate._model_pool=service.config._model_pool.copy()
     if (service.root / '.tenant').exists():
         # Templates may contain environment defaults; tenants always use their own keys.
         for entry in credential_entries(candidate):

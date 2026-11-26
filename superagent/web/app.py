@@ -163,6 +163,11 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     async def permission_error(request,exc):
         return JSONResponse({'detail':str(exc)},status_code=403)
 
+    from superagent.core.providers.base import ProviderError
+    @app.exception_handler(ProviderError)
+    async def provider_error(request,exc):
+        return JSONResponse({'detail':service.audit.redact(str(exc))},status_code=400)
+
     def require_admin(request):
         if auth is None or not getattr(request.state,'user',{}).get('admin'):raise HTTPException(403,'Только администратор')
 
@@ -356,7 +361,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def test_provider(draft: dict):
         from superagent.core.providers.factory import make_provider
         selected=draft.get('model','demo:office')
-        cfg=service.config.providers.get(selected.split(':',1)[0])
+        from superagent.core.providers.pool import resolve_provider
+        cfg=resolve_provider(service.config,selected.split(':',1)[0])
         if cfg and cfg.type=='openai' and cfg.base_url.startswith('https://api.openai.com') and not cfg.key():raise ValueError('API-ключ OpenAI не сохранён. Введите его в карточке модели и дождитесь сообщения о сохранении ключа.')
         model = make_provider(selected, service.config)
         try:
@@ -390,6 +396,11 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             stored = service.config.providers.get(name) if isinstance(name, str) else None
             if stored is not None and stored.base_url.rstrip('/') == base.rstrip('/'):
                 key = stored.key()
+        key_to_save=key
+        if not key:
+            from superagent.core.providers.pool import resolve_provider
+            shared=resolve_provider(service.config,name)
+            if shared and shared.base_url.rstrip('/')==base.rstrip('/'):key=shared.key()
         models = list_models(base, key)
         ticket = uuid4().hex
         with registry_lock:
@@ -398,7 +409,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
                 if value['expires'] < now: model_discoveries.pop(old,None)
             if len(model_discoveries) >= 128:
                 model_discoveries.pop(next(iter(model_discoveries)))
-            model_discoveries[ticket] = {'root':str(service.root),'name':name,'base':base,'models':models,'key':key,'expected':expected,'generation':generation,'expires':now+120}
+            model_discoveries[ticket] = {'root':str(service.root),'name':name,'base':base,'models':models,'key':key_to_save,'expected':expected,'generation':generation,'expires':now+120}
         return JSONResponse({'models': models, 'save_ticket':ticket}, headers={'Cache-Control': 'no-store'})
 
     @app.post('/api/providers/models/save')
@@ -452,12 +463,14 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             service.registry.scan()
             from superagent.core.chat_connections import available
             from superagent.core.providers.capabilities import supports_chat
+            from superagent.core.providers.pool import effective_providers
+            providers=effective_providers(service.config)
             return {"chat_connections": available(service.config), "shared_agents":shared_store().list(),"agents": [a.model_dump() for a in service.registry.agents.values()],
                     "skills": [s.model_dump() for s in service.registry.skills.values()],
                     "errors": service.registry.errors,
                     "builtin_skills": list(__import__("superagent.integrations.catalog", fromlist=["BUILTINS"]).BUILTINS),
-                    "models": [f"{name}:{m}" for name, p in service.config.providers.items() for m in p.models if supports_chat(p,m)],
-                    "providers": [{"name": name, "type": p.type, "configured": bool(p.key()) or p.type in ("demo", "ollama")} for name, p in service.config.providers.items()]}
+                    "models": [f"{name}:{m}" for name, p in providers.items() for m in p.models if supports_chat(p,m)],
+                    "providers": [{"name": name, "type": p.type, "configured": bool(p.key()) or p.type in ("demo", "ollama"),'shared':name in service.config._model_pool and p is service.config._model_pool[name]} for name, p in providers.items()]}
 
     @app.put("/api/agents/{name}")
     def save_agent(name: str, agent: Agent):

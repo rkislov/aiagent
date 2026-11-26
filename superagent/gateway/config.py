@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, field_validator, model_validator
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -196,6 +196,7 @@ class ImageGenerationConfig(StrictModel):
 
 
 class Config(StrictModel):
+    _model_pool: dict = PrivateAttr(default_factory=dict)
     embeddings: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
     web_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "[::1]"])

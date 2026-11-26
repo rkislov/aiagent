@@ -23,7 +23,8 @@ def normalize(vector):
 
 def signature(config):
     settings=config.embeddings
-    provider=config.providers.get(settings.provider)
+    from superagent.core.providers.pool import resolve_provider
+    provider=resolve_provider(config,settings.provider)
     if not provider:raise ValueError('Провайдер embedding-модели не найден')
     return hashlib.sha256(json.dumps([settings.provider,provider.base_url,settings.model,settings.dimensions]).encode()).hexdigest()
 

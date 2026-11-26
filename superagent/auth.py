@@ -31,6 +31,8 @@ class Auth:
         self.db = root / 'data/auth.db'
         self.lock = threading.RLock()
         self.services = {}
+        self._pool_signature=None
+        self._pool_cache={}
         self.hasher = PasswordHasher()
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE, hash TEXT, totp TEXT, enrolled INTEGER, last_step INTEGER, admin INTEGER)')
@@ -156,7 +158,22 @@ class Auth:
                     (root/folder).mkdir(exist_ok=True)
                 from .shared_agents import SharedAgents
                 self.services[user['id']]=Platform(root,shared_store=SharedAgents(self.root))
-            return self.services[user['id']]
+            from .gateway.config import load_config
+            with self.connect() as db:admins=db.execute('SELECT id FROM users WHERE admin=1 AND disabled=0 ORDER BY username').fetchall()
+            paths=[self.root/'data/users'/uid/'config.yaml' for (uid,) in admins]
+            stamp=tuple((str(path),path.stat().st_mtime_ns,path.stat().st_ino) for path in paths if path.is_file())
+            if stamp!=self._pool_signature:
+                pool={}
+                for filename,_,_ in stamp:
+                    for name,cfg in load_config(Path(filename).parent).providers.items():
+                        if cfg.key() or cfg.type=='ollama':pool.setdefault(name,cfg.model_copy(deep=True))
+                self._pool_cache=pool
+                self._pool_signature=stamp
+            service=self.services[user['id']]
+            service.config._model_pool=self._pool_cache.copy()
+            for cfg in self._pool_cache.values():
+                if cfg.key() and cfg.key() not in service.audit.secrets:service.audit.secrets.append(cfg.key())
+            return service
 
     def reauthenticate(self, uid, password, code):
         with self.connect() as db:
