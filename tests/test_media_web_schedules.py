@@ -113,8 +113,18 @@ def test_schedules_api_requires_auth_and_scopes_to_user(platform):
     auth=Auth(platform.root);auth.create('alice','alice-password-long',bootstrap=True);auth.create('bobby','bobby-password-long')
     with TestClient(create_app(platform)) as c:assert c.get('/api/schedules').status_code==401
     services=[]
-    for uid, in auth.connect().execute('SELECT id FROM users'):
+    with auth.connect() as db:
+        users = db.execute('SELECT id FROM users ORDER BY username').fetchall()
+    for uid, in users:
         services.append(auth.service({'id':uid}))
-    Store(services[0].root).save(Schedule(name='private',agent='office_assistant',message='private'))
+    store = Store(services[0].root)
+    job = store.save(Schedule(name='private', agent='', model='demo:office', message='private'))
+    with store.connect() as db:
+        db.execute('UPDATE jobs SET next_run=0 WHERE id=?', (job,))
+    execute_due(services[0], threading.Event())
+    entries = services[0].audit.query()
+    assert entries[0]['kind'] == 'schedule'
+    assert entries[0]['status'] == 'ok'
+    assert {entry['user'] for entry in entries} == {'alice'}
     assert Store(services[1].root).list()==[]
     for service in services:service.close()

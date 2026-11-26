@@ -32,6 +32,8 @@ def test_auth_and_full_isolation(platform):
         assert not b.get('/api/settings').json()['providers']['openai']['api_key_present']
         r=a.post('/api/chat',json={'agent':'private_agent','message':'hello','session_id':'private_session'})
         assert 'done' in r.text
+        audit = a.get('/api/audit').json()
+        assert audit and {entry['user'] for entry in audit} == {'alice'}
         assert b.get('/api/audit').json()==[]
         assert b.get('/api/sessions/private_agent').status_code==400
         assert a.post('/api/auth/logout',json={}).status_code==200

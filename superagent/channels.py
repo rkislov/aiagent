@@ -9,14 +9,22 @@ import secrets
 import httpx
 
 
-def reply(service, config, sender, text, *, confirm=None, cancelled=None, session_id=None, web_enabled=None):
+def reply(service, config, sender, text, *, confirm=None, cancelled=None, session_id=None, web_enabled=None, author=None):
     session = session_id or hashlib.sha256((config.type + ':' + sender).encode()).hexdigest()
     result = ''
     confirm = confirm or (lambda _:False)
-    events=(service.runner.run(config.agent,text,session,confirm=confirm,cancelled=cancelled,web_enabled=web_enabled) if config.agent else service.runner.run_conversation(text,config.model,session_id=session,confirm=confirm,cancelled=cancelled,web_enabled=web_enabled))
-    for event in events:
-        if event['type'] == 'done': result = event['content']
-        elif event['type'] == 'error': result = event['error']
+    channel_label = {'mattermost': 'Mattermost', 'telegram': 'Telegram', 'xmpp': 'XMPP'}[config.type]
+    with service.audit.as_user(f'{channel_label} · {author}' if author is not None else None):
+        options = {'confirm': confirm, 'cancelled': cancelled, 'web_enabled': web_enabled}
+        if config.agent:
+            events = service.runner.run(config.agent, text, session, **options)
+        else:
+            events = service.runner.run_conversation(text, config.model, session_id=session, **options)
+        for event in events:
+            if event['type'] == 'done':
+                result = event['content']
+            elif event['type'] == 'error':
+                result = event['error']
     return result or 'Действие не выполнено. Для подтверждения используйте веб-интерфейс.'
 
 
@@ -91,7 +99,7 @@ def run(service, name, *, stop=None, config=None, on_state=None):
             async def message(self, msg):
                 sender = str(msg['from'].bare)
                 if msg['type'] == 'chat' and sender in cfg.allowed and str(msg['body']):
-                    text = await asyncio.to_thread(reply, service, cfg, name+':'+sender, str(msg['body']), cancelled=stop)
+                    text = await asyncio.to_thread(reply, service, cfg, name+':'+sender, str(msg['body']), cancelled=stop, author=sender)
                     self.send_message(mto=sender, mbody=text, mtype='chat')
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -121,7 +129,8 @@ def run(service, name, *, stop=None, config=None, on_state=None):
                     message = update.get('message', {})
                     chat = str(message.get('chat', {}).get('id', ''))
                     if chat not in cfg.allowed or not message.get('text'): continue
-                    text = reply(service, cfg, name + ':' + chat, message['text'],cancelled=stop)
+                    author = (message.get('sender_chat') or message.get('from') or {}).get('id')
+                    text = reply(service, cfg, name + ':' + chat, message['text'], cancelled=stop, author=author)
                     for i in range(0, len(text), 3500):
                         client.post(base + '/sendMessage', json={'chat_id': chat, 'text': text[i:i+3500]}).raise_for_status()
         else:
@@ -215,7 +224,7 @@ def mattermost_reply(owner, name, cfg, post, *, confirm=None, cancelled=None):
                 return 'Подключено баз знаний: '+str(len(selected))+'.'
             return 'Используйте '+prefix+' knowledge list|off|use ID[,ID]'
         return HELP.replace('/ai ',prefix+' ')
-    return reply(service,cfg,sender,text,session_id=session,confirm=confirm,cancelled=cancelled)
+    return reply(service, cfg, sender, text, session_id=session, confirm=confirm, cancelled=cancelled, author=post['user_id'])
 
 
 
