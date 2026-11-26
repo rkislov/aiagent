@@ -152,7 +152,7 @@ def execute_due(service, stop):
     from .integrations.catalog import BUILTINS
     from .integrations.task_writes import WRITE_TOOLS
     def approve(event):
-        return draft.allow_reads and event['skill'] in BUILTINS and event['skill'] not in WRITE_TOOLS and event['skill'] != 'ssh_run'
+        return draft.allow_reads and event['skill'] in BUILTINS and event['skill'] not in WRITE_TOOLS|{'ssh_run','office_create','office_edit','image_generate','knowledge_index','knowledge_forget'}
     try:
         run = (service.runner.run(draft.agent,draft.message,session,confirm=approve,cancelled=Cancel(),web_enabled=draft.web_enabled) if draft.agent else service.runner.run_conversation(draft.message,draft.model,session_id=session,confirm=approve,cancelled=Cancel(),web_enabled=draft.web_enabled,connections=draft.connections))
         for event in run:
@@ -176,7 +176,7 @@ class Scheduler:
 
     def services(self):
         if not self.auth:return [self.owner]
-        with self.auth.connect() as db:users=db.execute('SELECT id FROM users WHERE enrolled=1').fetchall()
+        with self.auth.connect() as db:users=db.execute('SELECT id FROM users WHERE enrolled=1 AND disabled=0').fetchall()
         # Do not create workspaces for users who have never opened the app.
         return [self.auth.service({'id':uid}) for (uid,) in users if (self.owner.root/'data/users'/uid/'data/schedules.db').exists()]
 

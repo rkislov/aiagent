@@ -59,7 +59,7 @@ def test_no_redirect_or_remote_body_leak(monkeypatch):
     assert 'sensitive' not in str(error.value)
 
 
-def test_save_only_list_preserves_settings_and_key(platform,monkeypatch):
+def test_save_models_persists_verified_key_without_changing_other_settings(platform,monkeypatch):
     from superagent.gateway.config import load_config
     platform.config.providers['openai']=ProviderConfig(api_key_env=None,api_key='stored-key',models=['old'])
     platform.config.context_turns=17
@@ -74,7 +74,7 @@ def test_save_only_list_preserves_settings_and_key(platform,monkeypatch):
         assert client.post('/api/providers/models/save',json={'ticket':discovery['save_ticket']}).status_code==400
     saved=load_config(platform.root)
     assert saved.providers['openai'].models==['new-model']
-    assert saved.providers['openai'].key()=='stored-key'
+    assert saved.providers['openai'].key()=='unsaved-key'
     assert saved.context_turns==17
 
 
@@ -100,4 +100,4 @@ def test_discovery_save_creates_only_minimal_provider(platform,monkeypatch):
         assert client.post('/api/providers/models/save',json={'ticket':data['save_ticket']}).status_code==200
     provider=load_config(platform.root).providers['new_service']
     assert provider.models==['new-model']
-    assert provider.api_key is None and provider.api_key_env is None
+    assert provider.key()=='not-saved' and provider.api_key_env is None

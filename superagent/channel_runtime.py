@@ -15,7 +15,7 @@ class ChannelSupervisor:
 
     def services(self):
         if not self.auth:return [self.owner]
-        with self.auth.connect() as db:users=db.execute('SELECT id FROM users WHERE enrolled=1').fetchall()
+        with self.auth.connect() as db:users=db.execute('SELECT id FROM users WHERE enrolled=1 AND disabled=0').fetchall()
         return [self.auth.service({'id':uid}) for (uid,) in users if (self.owner.root/'data/users'/uid/'config.yaml').exists()]
 
     def report(self,key,state,error=''):

@@ -182,7 +182,22 @@ class ChannelConfig(StrictModel):
         return (os.environ.get(self.secret_env, '') if self.secret_env else '') or (self.secret.get_secret_value() if self.secret else '')
 
 
+class EmbeddingConfig(StrictModel):
+    enabled: bool = False
+    provider: str = 'openai'
+    model: str = 'text-embedding-3-small'
+    dimensions: int = Field(default=0,ge=0,le=8192)
+
+
+class ImageGenerationConfig(StrictModel):
+    enabled: bool = True
+    provider: str = 'openai'
+    model: str = 'gpt-image-1'
+
+
 class Config(StrictModel):
+    embeddings: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
     web_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "[::1]"])
     channels: dict[str, ChannelConfig] = Field(default_factory=dict)
     connections: Connections = Field(default_factory=Connections)

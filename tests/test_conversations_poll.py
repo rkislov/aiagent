@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from superagent.web.app import create_app
 from superagent.core.conversations import import_agent_history
 from superagent.integrations.schedule_tools import SCHEDULE_TOOLS
-CHAT_UTILITIES=SCHEDULE_TOOLS|{'dialog_search'}
+CHAT_UTILITIES=SCHEDULE_TOOLS|{'dialog_search','office_list','office_read','office_create','office_edit','office_compare','image_generate','knowledge_list','knowledge_index','knowledge_search','knowledge_forget'}
 
 
 class Recorder:

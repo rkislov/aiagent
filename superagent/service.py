@@ -7,7 +7,7 @@ from .gateway.registry import Registry
 
 
 class Platform:
-    def __init__(self, root: Path, *, config=None):
+    def __init__(self, root: Path, *, config=None,shared_store=None):
         self.root = root.resolve()
         (self.root / "data/workspace").mkdir(parents=True, exist_ok=True)
         self.config = config if config is not None else load_config(self.root)
@@ -15,7 +15,7 @@ class Platform:
             for entry in credential_entries(self.config):
                 for field in ('api_key_env','password_env','secret_env'):
                     if hasattr(entry,field): setattr(entry,field,None)
-        self.registry = Registry(self.root, self.config)
+        self.registry = Registry(self.root, self.config,shared_store)
         self.audit = Audit(self.root, [p.key() for p in credential_entries(self.config)], self.config.audit_max_bytes, self.config.audit_backups)
         from .integrations.hub import Hub
         self.runner = AgentRunner(self.registry, self.audit)

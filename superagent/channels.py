@@ -46,12 +46,12 @@ def test_channel(service,cfg):
 
 def mattermost_confirmation(client,base,cfg,original,seen,stop,timeout):
     from .core.chat_connections import CONNECTIONS
-    reads={name for _,tools in CONNECTIONS.values() for name in tools}|{'web_read','web_search','dialog_search'}
+    reads={name for _,tools in CONNECTIONS.values() for name in tools}|{'web_read','web_search','dialog_search','office_read','office_create','office_edit','office_compare','image_generate'}
     def confirm(event):
         if event['skill'] not in reads:return False
         code=str(secrets.randbelow(900)+100)
         root=original.get('root_id') or original['id']
-        message='Разрешить чтение **'+event['skill']+'**?\n```json\n'+json.dumps(event['input'],ensure_ascii=False,indent=2)+'\n```\nДля подтверждения ответьте только тремя цифрами: **'+code+'**. Для отказа: **ОТМЕНА '+code+'**. Код действует '+str(timeout)+' с; после 3 неверных попыток запрос отменяется.'
+        message='Разрешить действие **'+event['skill']+'**?\n```json\n'+json.dumps(event.get('preview',event['input']),ensure_ascii=False,indent=2)+'\n```\nДля подтверждения ответьте только тремя цифрами: **'+code+'**. Для отказа: **ОТМЕНА '+code+'**. Код действует '+str(timeout)+' с; после 3 неверных попыток запрос отменяется.'
         r=client.post(base+'/posts',json={'channel_id':original['channel_id'],'root_id':root,'message':message});r.raise_for_status()
         since=r.json().get('create_at',int(time.time()*1000))
         deadline=time.monotonic()+timeout

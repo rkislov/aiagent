@@ -35,7 +35,8 @@ def atomic_write(path: Path, text: str):
 
 
 class Registry:
-    def __init__(self, root: Path, config: Config):
+    def __init__(self, root: Path, config: Config, shared_store=None):
+        self.shared_store=shared_store
         self.root = root.resolve()
         self.config = config
         self.skills: dict[str, Skill] = {}
@@ -86,9 +87,15 @@ class Registry:
                 agents[agent.name] = agent
             except Exception as exc:
                 errors[f"agent:{path.stem}"] = str(exc)
+        if self.shared_store:
+            for entry in self.shared_store.list():
+                agent=Agent.model_validate(entry['agent'])
+                agents[agent.name]=agent
         self.skills, self.agents, self.errors = skills, agents, errors
 
     def build(self, name: str, candidate: Agent | None = None) -> Agent:
+        if candidate is None and name.startswith('shared_') and self.shared_store:
+            candidate=self.shared_store.get(name)
         if candidate is None and name not in self.agents:
             raise ValueError(self.errors.get(f"agent:{name}", f"Unknown agent: {name}"))
         agent = candidate or self.agents[name]
