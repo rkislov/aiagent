@@ -1,10 +1,22 @@
 # aiagent
 
-Автор: **Кислов Роман Сергеевич**. Лицензия: [Apache 2.0](LICENSE). Рабочий интерфейс и CLI сохраняют название Superagent.
+Автор: **Кислов Роман Сергеевич**. Лицензия: [Apache 2.0](LICENSE). Название приложения — **aiagent**. CLI: `aiagent` (совместимая команда `superagent` сохранена).
 
 Основной репозиторий поддерживает @rkislov; предложения — через issues и PR, см. [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Локальная Python-платформа для сборки агентов из навыков. FastAPI, React, CodeMirror, SQLite. Пользовательские пространства с паролем и TOTP-2FA, без Docker.
+
+## Возможности
+
+- Обычный чат и агенты с личными подключениями; личные и общие агенты.
+- Word, Excel и PowerPoint: загрузка, создание, изменение, сравнение и скачивание.
+- Генерация изображений через API с подтверждением.
+- Личная база знаний: SQLite, embedding-модели и семантический поиск.
+- Управление пользователями, роли, блокировка, пароль и 2FA.
+- SearXNG и веб-поиск, готовые настройки «Юриста РФ».
+- Интерфейс на React и Tailwind CSS: карточки, светлая, тёмная и автоматическая тема.
+
+[Настройка новых возможностей](docs/office-knowledge-users.md).
 
 ## Запуск
 
@@ -14,7 +26,7 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[test]'
-python -m platform serve
+python -m superagent serve
 ```
 
 Откройте [localhost:8080](http://localhost:8080). Собранный фронтенд включён в репозиторий; Node.js нужен только для его изменения.
@@ -24,14 +36,14 @@ python -m platform serve
 ## CLI
 
 ```bash
-python -m platform skills list
-python -m platform skills validate email_filter
-python -m platform skills test email_filter --input '{"messages":[{"subject":"Счёт на оплату","body":"Срочно"}]}'
-python -m platform agents build office_assistant
-python -m platform agents chat office_assistant
-python -m platform agents run office_assistant --message 'Разбери письмо: хочу купить продукт'
-python -m platform agents chat office_assistant --session my_conversation
-python -m platform serve --port 8081
+python -m superagent skills list
+python -m superagent skills validate email_filter
+python -m superagent skills test email_filter --input '{"messages":[{"subject":"Счёт на оплату","body":"Срочно"}]}'
+python -m superagent agents build office_assistant
+python -m superagent agents chat office_assistant
+python -m superagent agents run office_assistant --message 'Разбери письмо: хочу купить продукт'
+python -m superagent agents chat office_assistant --session my_conversation
+python -m superagent serve --port 8081
 ```
 
 `/exit` завершает диалог. Подтверждение в CLI принимается только при вводе `y`; пустой ввод и EOF означают отказ.
@@ -241,7 +253,7 @@ OpenAI использует `https://api.openai.com/v1`, DeepSeek — `https://a
 
 ## CLI: локальное администрирование и рабочие пространства
 
-Все команды доступны как `superagent`, `python -m superagent` и из репозитория `python -m platform`. Справка: `superagent --help`, `superagent auth --help`, `superagent models --help`.
+Все команды доступны как `superagent`, `python -m superagent` и из репозитория `python -m superagent`. Справка: `superagent --help`, `superagent auth --help`, `superagent models --help`.
 
 ### Восстановление администратора
 
@@ -249,8 +261,8 @@ OpenAI использует `https://api.openai.com/v1`, DeepSeek — `https://a
 
 ```bash
 source .venv/bin/activate
-python -m platform users list
-python -m platform auth reset-admin ИМЯ_АДМИНИСТРАТОРА
+python -m superagent users list
+python -m superagent auth reset-admin ИМЯ_АДМИНИСТРАТОРА
 ```
 
 Введите логин для подтверждения, затем новый пароль дважды. Ввод пароля скрыт, пароль не передаётся через аргументы, окружение, историю команд или журнал. Команда требует владения каталогом сервера и базой пользователей; запись для группы/других пользователей запрещена, база должна быть приватной. Работа через pipe без TTY отклоняется. Это аварийный локальный доступ владельца сервера, а не пользовательский веб-API; старый пароль и второй фактор при нём не требуются.
@@ -260,7 +272,7 @@ python -m platform auth reset-admin ИМЯ_АДМИНИСТРАТОРА
 По умолчанию 2FA и оставшиеся резервные коды сохраняются. Если потерян также второй фактор:
 
 ```bash
-python -m platform auth reset-admin ИМЯ_АДМИНИСТРАТОРА --reset-2fa
+python -m superagent auth reset-admin ИМЯ_АДМИНИСТРАТОРА --reset-2fa
 ```
 
 После этого при следующем входе понадобится настроить новый аутентификатор. Для отдельного аварийного сброса только 2FA: `auth reset-2fa ЛОГИН`. Восстановление записывается в `security_events` с UID локального оператора, без паролей и секретов. Обычного пользователя нельзя выбрать целью `reset-admin`.

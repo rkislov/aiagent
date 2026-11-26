@@ -20,7 +20,7 @@ export default function ModelDiscovery({name,entry,onModels}) {
        const savedResponse=await fetch('/api/providers/models/save',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify({ticket:data.save_ticket})});
        const saved=await savedResponse.json();
        if(!savedResponse.ok)throw Error(typeof saved.detail==='string'?saved.detail:'Не удалось сохранить список моделей');
-       if(active){callback.current(saved.models);setStatus({text:`Сохранено моделей: ${saved.models.length}. Список доступен в агентах.`});}
+       if(active){callback.current(saved.models);setStatus({text:`Ключ и список сохранены. Моделей: ${saved.models.length}. Список доступен в агентах.`});}
      }catch(e){if(active&&e.name!=='AbortError')setStatus({error:true,text:e.message});}
    },800);
    return()=>{active=false;clearTimeout(timer);controller.abort();};

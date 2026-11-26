@@ -31,12 +31,16 @@ class Auth:
         self.db = root / 'data/auth.db'
         self.lock = threading.RLock()
         self.services = {}
+        self._pool_signature=None
+        self._pool_cache={}
         self.hasher = PasswordHasher()
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE, hash TEXT, totp TEXT, enrolled INTEGER, last_step INTEGER, admin INTEGER)')
             db.execute('CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user TEXT, expires REAL, challenge INTEGER)')
             db.execute('CREATE TABLE IF NOT EXISTS attempts(key TEXT, time REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS recovery(user TEXT, hash TEXT, used INTEGER DEFAULT 0, PRIMARY KEY(user, hash))')
+            if 'disabled' not in {row[1] for row in db.execute('PRAGMA table_info(users)')}:
+                db.execute('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0')
         self.db.chmod(0o600)
 
     def connect(self): return sqlite3.connect(self.db, timeout=15)
@@ -49,7 +53,7 @@ class Auth:
             if bootstrap and count: raise ValueError('Первоначальная настройка уже завершена')
             uid = secrets.token_hex(16)
             try:
-                db.execute('INSERT INTO users VALUES(?,?,?,?,0,-1,?)',(uid,username,self.hasher.hash(password),pyotp.random_base32(),int(count==0)))
+                db.execute('INSERT INTO users(id,username,hash,totp,enrolled,last_step,admin) VALUES(?,?,?,?,0,-1,?)',(uid,username,self.hasher.hash(password),pyotp.random_base32(),int(count==0)))
             except sqlite3.IntegrityError:
                 raise ValueError('Такой логин уже существует') from None
         return {'username':username}
@@ -65,13 +69,13 @@ class Auth:
             row=db.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
         try:
             self.hasher.verify(row[2] if row else self.hasher.hash('dummy-password'),password)
-            if not row: raise ValueError()
+            if not row or row[7]: raise ValueError()
         except Exception:
             raise ValueError('Неверный логин или пароль') from None
         token=secrets.token_urlsafe(32)
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            if not db.execute('SELECT 1 FROM users WHERE id=? AND hash=? AND totp=?',(row[0],row[2],row[3])).fetchone():
+            if not db.execute('SELECT 1 FROM users WHERE id=? AND hash=? AND totp=? AND disabled=0',(row[0],row[2],row[3])).fetchone():
                 raise ValueError('Учётные данные изменились. Повторите вход.')
             db.execute('INSERT INTO sessions VALUES(?,?,?,1)',(self.digest(token),row[0],now+300))
         result={'challenge':token,'enroll':not bool(row[4])}
@@ -101,7 +105,7 @@ class Auth:
         codes = None
         with self.lock, self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row=db.execute('SELECT u.* FROM users u JOIN sessions s ON s.user=u.id WHERE s.token=? AND s.challenge=1 AND s.expires>?',(self.digest(token),time.time())).fetchone()
+            row=db.execute('SELECT u.* FROM users u JOIN sessions s ON s.user=u.id WHERE s.token=? AND s.challenge=1 AND s.expires>? AND u.disabled=0',(self.digest(token),time.time())).fetchone()
             if not row: raise ValueError('Запрос входа истёк')
             key='totp:'+row[0]
             if db.execute('SELECT count(*) FROM attempts WHERE key=? AND time>?',(key,time.time()-900)).fetchone()[0]>=5:
@@ -140,7 +144,7 @@ class Auth:
     def user(self, token):
         if not token: return None
         with self.connect() as db:
-            row=db.execute('SELECT u.id,u.username,u.admin FROM users u JOIN sessions s ON s.user=u.id WHERE s.token=? AND s.challenge=0 AND s.expires>?',(self.digest(token),time.time())).fetchone()
+            row=db.execute('SELECT u.id,u.username,u.admin FROM users u JOIN sessions s ON s.user=u.id WHERE s.token=? AND s.challenge=0 AND s.expires>? AND u.disabled=0',(self.digest(token),time.time())).fetchone()
         return dict(zip(('id','username','admin'),row)) if row else None
 
     def service(self, user):
@@ -152,8 +156,24 @@ class Auth:
                 (root/'.tenant').touch()
                 for folder in ('agents','skills'):
                     (root/folder).mkdir(exist_ok=True)
-                self.services[user['id']]=Platform(root)
-            return self.services[user['id']]
+                from .shared_agents import SharedAgents
+                self.services[user['id']]=Platform(root,shared_store=SharedAgents(self.root))
+            from .gateway.config import load_config
+            with self.connect() as db:admins=db.execute('SELECT id FROM users WHERE admin=1 AND disabled=0 ORDER BY username').fetchall()
+            paths=[self.root/'data/users'/uid/'config.yaml' for (uid,) in admins]
+            stamp=tuple((str(path),path.stat().st_mtime_ns,path.stat().st_ino) for path in paths if path.is_file())
+            if stamp!=self._pool_signature:
+                pool={}
+                for filename,_,_ in stamp:
+                    for name,cfg in load_config(Path(filename).parent).providers.items():
+                        if cfg.key() or cfg.type=='ollama':pool.setdefault(name,cfg.model_copy(deep=True))
+                self._pool_cache=pool
+                self._pool_signature=stamp
+            service=self.services[user['id']]
+            service.config._model_pool=self._pool_cache.copy()
+            for cfg in self._pool_cache.values():
+                if cfg.key() and cfg.key() not in service.audit.secrets:service.audit.secrets.append(cfg.key())
+            return service
 
     def reauthenticate(self, uid, password, code):
         with self.connect() as db:
@@ -180,10 +200,38 @@ class Auth:
         db.execute('CREATE TABLE IF NOT EXISTS security_events(time REAL, actor TEXT, target TEXT, action TEXT)')
         db.execute('INSERT INTO security_events VALUES(?,?,?,?)',(time.time(),actor,target,action))
 
+    def list_users(self,actor):
+        with self.connect() as db:
+            if not db.execute('SELECT 1 FROM users WHERE id=? AND admin=1 AND disabled=0',(actor,)).fetchone():raise PermissionError('Только администратор')
+            return [dict(zip(('id','username','admin','enrolled','disabled'),row)) for row in db.execute('SELECT id,username,admin,enrolled,disabled FROM users ORDER BY username')]
+
+    def manage_user(self,actor,target,action,password,code,*,new_password=None):
+        if action not in ('block','unblock','promote','demote','reset_password','revoke_sessions'):raise ValueError('Неизвестное действие')
+        if action=='reset_password' and (not isinstance(new_password,str) or not 12<=len(new_password)<=256):raise ValueError('Пароль должен содержать 12–256 символов')
+        with self.lock:
+            with self.connect() as db:
+                if not db.execute('SELECT 1 FROM users WHERE id=? AND admin=1 AND disabled=0',(actor,)).fetchone():raise PermissionError('Только администратор')
+            proof=self.reauthenticate(actor,password,code)
+            with self.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if not db.execute('SELECT 1 FROM users u JOIN sessions s ON s.user=u.id WHERE u.id=? AND u.admin=1 AND u.disabled=0 AND s.token=? AND s.expires>?',(actor,proof,time.time())).fetchone():raise PermissionError('Права администратора изменились')
+                row=db.execute('SELECT id,admin,disabled FROM users WHERE username=?',(target,)).fetchone()
+                if not row:raise ValueError('Пользователь не найден')
+                uid,admin,disabled=row
+                if uid==actor and action in ('block','demote','reset_password'):raise ValueError('Для своей учётной записи используйте смену пароля; блокировка и снятие собственной роли запрещены')
+                if admin and not disabled and action in ('block','demote') and db.execute('SELECT count(*) FROM users WHERE admin=1 AND disabled=0').fetchone()[0]<=1:raise ValueError('Нельзя отключить последнего администратора')
+                db.execute('DELETE FROM sessions WHERE token=?',(proof,))
+                if action in ('block','unblock'):db.execute('UPDATE users SET disabled=? WHERE id=?',(int(action=='block'),uid))
+                elif action in ('promote','demote'):db.execute('UPDATE users SET admin=? WHERE id=?',(int(action=='promote'),uid))
+                elif action=='reset_password':db.execute('UPDATE users SET hash=? WHERE id=?',(self.hasher.hash(new_password),uid))
+                db.execute('DELETE FROM sessions WHERE user=?',(uid,))
+                self.security_event(db,actor,uid,'admin_'+action)
+                return uid
+
     def reset_two_factor(self, actor, target, password, code):
         with self.lock:
             with self.connect() as db:
-                if not db.execute('SELECT 1 FROM users WHERE id=? AND admin=1',(actor,)).fetchone():
+                if not db.execute('SELECT 1 FROM users WHERE id=? AND admin=1 AND disabled=0',(actor,)).fetchone():
                     raise PermissionError('Только администратор')
                 victim = db.execute('SELECT id FROM users WHERE username=?',(target,)).fetchone()
                 if not victim: raise ValueError('Пользователь не найден')
@@ -191,7 +239,7 @@ class Auth:
             proof = self.reauthenticate(actor,password,code)
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if not db.execute('SELECT 1 FROM sessions WHERE token=? AND user=?',(proof,actor)).fetchone():
+                if not db.execute('SELECT 1 FROM sessions s JOIN users u ON u.id=s.user WHERE s.token=? AND s.user=? AND u.admin=1 AND u.disabled=0 AND s.expires>?',(proof,actor,time.time())).fetchone():
                     raise ValueError('Повторите проверку личности')
                 db.execute('DELETE FROM sessions WHERE token=?',(proof,))
                 db.execute('UPDATE users SET totp=?,enrolled=0,last_step=-1 WHERE id=?',(pyotp.random_base32(),victim[0]))

@@ -27,7 +27,9 @@ def list_schedules(hub):
     for row in store.list():
         jobs.append({k:v for k,v in row.items() if k not in ('result','session')})
         jobs[-1]['next_run_local']=local_time(row['next_run'],row['timezone'])
-    models=[f'{name}:{model}' for name,p in hub.config.providers.items() if p.key() or p.type in ('demo','ollama') for model in p.models]
+    from superagent.core.providers.pool import effective_providers
+    from superagent.core.providers.capabilities import supports_chat
+    models=[f'{name}:{model}' for name,p in effective_providers(hub.config).items() if p.key() or p.type in ('demo','ollama') for model in p.models if supports_chat(p,model)]
     return {'schedules':jobs,'agents':[{'name':a.name,'model':a.model,'skills':a.skills} for a in hub.registry.agents.values()], 'models':models,'timezone':'Europe/Moscow'}
 
 

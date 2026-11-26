@@ -48,6 +48,7 @@ class ChatRequest(StrictModel):
     transport: Literal["stream", "poll"] = "stream"
     web_enabled: bool | None = None
     images: list[str] = Field(default_factory=list, max_length=4)
+    files: list[str] = Field(default_factory=list,max_length=4)
 
     @field_validator("images")
     @classmethod
@@ -119,7 +120,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         if auth:
             for tenant in auth.services.values(): tenant.close()
 
-    app = FastAPI(title="Superagent", lifespan=lifespan)
+    app = FastAPI(title="aiagent", lifespan=lifespan)
     app.state.platform = owner
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=owner.config.web_hosts)
 
@@ -133,7 +134,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             if not request.headers.get("content-type", "").startswith("application/json"):
                 return JSONResponse({"detail": "application/json required"}, status_code=415)
             length = request.headers.get("content-length")
-            if length and int(length) > 2_000_000:
+            if length and int(length) > (11_000_000 if request.url.path=='/api/files' else 2_000_000):
                 return JSONResponse({"detail": "Request too large"}, status_code=413)
         context_token = None
         if auth and request.url.path.startswith('/api/') and not request.url.path.startswith('/api/auth/'):
@@ -146,7 +147,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             response = await call_next(request)
         finally:
             if context_token is not None: current_service.reset(context_token)
-        if request.url.path.startswith("/api/auth/"):
+        if request.url.path=='/' or request.url.path.startswith("/api/auth/"):
             response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -157,6 +158,18 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
         return JSONResponse({"detail": str(exc) if auth else service.audit.redact(str(exc))}, status_code=400)
+
+    @app.exception_handler(PermissionError)
+    async def permission_error(request,exc):
+        return JSONResponse({'detail':str(exc)},status_code=403)
+
+    from superagent.core.providers.base import ProviderError
+    @app.exception_handler(ProviderError)
+    async def provider_error(request,exc):
+        return JSONResponse({'detail':service.audit.redact(str(exc))},status_code=400)
+
+    def require_admin(request):
+        if auth is None or not getattr(request.state,'user',{}).get('admin'):raise HTTPException(403,'Только администратор')
 
     @app.get('/api/auth/state')
     def auth_state(request: Request):
@@ -202,15 +215,31 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.post('/api/users/reset-2fa')
     def reset_two_factor(request: Request, draft: dict):
-        if not request.state.user['admin']: raise HTTPException(403,'Только администратор')
+        require_admin(request)
         uid = auth.reset_two_factor(request.state.user['id'],draft.get('username',''),draft.get('password',''),draft.get('code',''))
         revoke_streams(uid)
         return {'ok':True}
 
     @app.post('/api/users')
     def create_user(request: Request, draft: dict):
-        if not request.state.user['admin']: raise HTTPException(403,'Только администратор')
-        return auth.create(draft.get('username',''),draft.get('password',''))
+        require_admin(request)
+        result=auth.create(draft.get('username',''),draft.get('password',''))
+        with auth.connect() as db:
+            target=db.execute('SELECT id FROM users WHERE username=?',(result['username'],)).fetchone()[0]
+            auth.security_event(db,request.state.user['id'],target,'admin_user_created')
+        return result
+
+    @app.get('/api/users')
+    def list_users(request: Request):
+        require_admin(request)
+        return auth.list_users(request.state.user['id'])
+
+    @app.post('/api/users/manage')
+    def manage_user(request: Request,draft: dict):
+        require_admin(request)
+        uid=auth.manage_user(request.state.user['id'],draft.get('username',''),draft.get('action',''),draft.get('password',''),draft.get('code',''),new_password=draft.get('new_password'))
+        revoke_streams(uid)
+        return {'ok':True}
 
     @app.get('/api/schedules')
     def schedules():
@@ -241,6 +270,69 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         manager=getattr(app.state,'channel_manager',None)
         return manager.status(service) if manager else []
 
+    @app.get('/api/files')
+    def list_files():
+        from superagent.integrations.office_files import OfficeFiles
+        return OfficeFiles(service.root).list()
+
+    @app.post('/api/files')
+    async def upload_file(request: Request):
+        import base64,binascii
+        from superagent.integrations.office_files import OfficeFiles
+        body=bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body)>11_000_000:raise HTTPException(413,'Файл слишком большой')
+        try:
+            draft=json.loads(body)
+            data=base64.b64decode(draft['data'],validate=True)
+            name=draft['name']
+        except (ValueError,KeyError,TypeError,binascii.Error):
+            raise ValueError('Нужны имя файла и содержимое base64') from None
+        # ZIP/XML parsing runs outside the event loop.
+        return await asyncio.to_thread(OfficeFiles(service.root).save,name,data)
+
+    @app.get('/api/files/{file_id}/download')
+    def download_file(file_id: str):
+        from superagent.integrations.office_files import OfficeFiles,MIME
+        store=OfficeFiles(service.root)
+        info=store.info(file_id)
+        return FileResponse(store.path(file_id),filename=info['name'],media_type=MIME[info['extension']],headers={'Cache-Control':'private, no-store'})
+
+    @app.get('/api/images/{file_id}')
+    def download_image(file_id: str):
+        from superagent.integrations.model_media import image_path
+        return FileResponse(image_path(service.root,file_id),media_type='image/png',headers={'Cache-Control':'private, no-store'})
+
+    @app.get('/api/knowledge')
+    def knowledge_status():
+        from superagent.integrations.knowledge import Knowledge
+        return Knowledge(service.root).list()
+
+    def shared_store():
+        from superagent.shared_agents import SharedAgents
+        return SharedAgents(owner.root)
+
+    @app.get('/api/shared-agents')
+    def list_shared_agents(request: Request):
+        user=getattr(request.state,'user',{})
+        return [{**row,'can_manage':row['owner']==user.get('id') or bool(user.get('admin'))} for row in shared_store().list()]
+
+    @app.post('/api/shared-agents')
+    def publish_agent(request: Request,draft: dict):
+        if auth is None:raise HTTPException(403,'Нужна авторизация')
+        agent=service.registry.build(draft.get('name',''))
+        id_=shared_store().publish(request.state.user['id'],agent)
+        service.registry.scan()
+        return {'id':id_}
+
+    @app.delete('/api/shared-agents/{id_}')
+    def unpublish_agent(id_: str,request: Request):
+        if auth is None:raise HTTPException(403,'Нужна авторизация')
+        shared_store().unpublish(request.state.user['id'],id_,bool(request.state.user['admin']))
+        service.registry.scan()
+        return {'ok':True}
+
     @app.post('/api/channels/{name}/test')
     def channel_test(name: str):
         from superagent.channels import test_channel
@@ -268,12 +360,19 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     @app.post("/api/providers/test")
     def test_provider(draft: dict):
         from superagent.core.providers.factory import make_provider
-        model = make_provider(draft.get("model", "demo:office"), service.config)
+        selected=draft.get('model','demo:office')
+        from superagent.core.providers.pool import resolve_provider
+        cfg=resolve_provider(service.config,selected.split(':',1)[0])
+        if cfg and cfg.type=='openai' and cfg.base_url.startswith('https://api.openai.com') and not cfg.key():raise ValueError('API-ключ OpenAI не сохранён. Введите его в карточке модели и дождитесь сообщения о сохранении ключа.')
+        model = make_provider(selected, service.config)
         try:
             result = model.chat([{"role": "user", "content": "Reply OK"}], [])
             return {"ok": True, "response": result.get("content")}
-        except Exception:
-            raise ValueError("Не удалось подключиться к модели. Проверьте адрес, ключ и имя модели") from None
+        except Exception as exc:
+            import re
+            status=re.search(r'HTTP (\d{3})',str(exc))
+            errors={'401':'API отклонил ключ: проверьте, что он действителен и сохранён.','403':'API запретил запрос: проверьте права ключа и доступность сервиса из региона сервера.','429':'API ограничил запросы: проверьте лимиты, квоту и баланс.','400':'API отклонил параметры: проверьте поддержку чата выбранной моделью.'}
+            raise ValueError(errors.get(status[1],'Не удалось подключиться к модели. Проверьте адрес, ключ и имя модели') if status else 'Нет ответа модели: проверьте сеть, адрес API и время ожидания.') from None
 
     @app.post('/api/providers/models')
     def discover_models(draft: dict):
@@ -297,6 +396,11 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             stored = service.config.providers.get(name) if isinstance(name, str) else None
             if stored is not None and stored.base_url.rstrip('/') == base.rstrip('/'):
                 key = stored.key()
+        key_to_save=key
+        if not key:
+            from superagent.core.providers.pool import resolve_provider
+            shared=resolve_provider(service.config,name)
+            if shared and shared.base_url.rstrip('/')==base.rstrip('/'):key=shared.key()
         models = list_models(base, key)
         ticket = uuid4().hex
         with registry_lock:
@@ -305,7 +409,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
                 if value['expires'] < now: model_discoveries.pop(old,None)
             if len(model_discoveries) >= 128:
                 model_discoveries.pop(next(iter(model_discoveries)))
-            model_discoveries[ticket] = {'root':str(service.root),'name':name,'base':base,'models':models,'expected':expected,'generation':generation,'expires':now+120}
+            model_discoveries[ticket] = {'root':str(service.root),'name':name,'base':base,'models':models,'key':key_to_save,'expected':expected,'generation':generation,'expires':now+120}
         return JSONResponse({'models': models, 'save_ticket':ticket}, headers={'Cache-Control': 'no-store'})
 
     @app.post('/api/providers/models/save')
@@ -320,7 +424,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             model_discoveries.pop(ticket)
             if model_generations.get((str(service.root),result['name'])) != result['generation']:
                 raise ValueError('Начата более новая загрузка. Старый список не сохранён.')
-            save_models(service,result['name'],result['base'],result['models'],result['expected'])
+            save_models(service,result['name'],result['base'],result['models'],result['expected'],key=result['key'])
         return JSONResponse({'saved':True,'models':result['models']}, headers={'Cache-Control':'no-store'})
 
     @app.get('/api/connection-examples')
@@ -348,20 +452,29 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         models=[f'{name}:{model}' for name,cfg in service.config.providers.items() if cfg.type!='demo' and (cfg.key() or cfg.type=='ollama') for model in cfg.models]
         return work_manager(models[0] if models else 'openai:gpt-4o-mini').model_dump()
 
+    @app.get('/api/agent-templates/lawyer_rf')
+    def lawyer_template():
+        import yaml
+        return Agent.model_validate(yaml.safe_load((owner.root/'agents/lawyer_rf.yaml').read_text())).model_dump()
+
     @app.get("/api/workspace")
     def workspace():
         with registry_lock:
             service.registry.scan()
             from superagent.core.chat_connections import available
-            return {"chat_connections": available(service.config), "agents": [a.model_dump() for a in service.registry.agents.values()],
+            from superagent.core.providers.capabilities import supports_chat
+            from superagent.core.providers.pool import effective_providers
+            providers=effective_providers(service.config)
+            return {"chat_connections": available(service.config), "shared_agents":shared_store().list(),"agents": [a.model_dump() for a in service.registry.agents.values()],
                     "skills": [s.model_dump() for s in service.registry.skills.values()],
                     "errors": service.registry.errors,
                     "builtin_skills": list(__import__("superagent.integrations.catalog", fromlist=["BUILTINS"]).BUILTINS),
-                    "models": [f"{name}:{m}" for name, p in service.config.providers.items() for m in p.models],
-                    "providers": [{"name": name, "type": p.type, "configured": bool(p.key()) or p.type in ("demo", "ollama")} for name, p in service.config.providers.items()]}
+                    "models": [f"{name}:{m}" for name, p in providers.items() for m in p.models if supports_chat(p,m)],
+                    "providers": [{"name": name, "type": p.type, "configured": bool(p.key()) or p.type in ("demo", "ollama"),'shared':name in service.config._model_pool and p is service.config._model_pool[name]} for name, p in providers.items()]}
 
     @app.put("/api/agents/{name}")
     def save_agent(name: str, agent: Agent):
+        if name.startswith('shared_'):raise ValueError('Общего агента изменяет автор через публикацию личной версии. Для своей версии выберите другое имя.')
         if name != agent.name:
             raise ValueError("Agent name must match URL")
         with registry_lock:
@@ -499,6 +612,11 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.post("/api/chat")
     async def chat(draft: ChatRequest, request: Request):
+        if draft.files:
+            from superagent.integrations.office_files import OfficeFiles
+            store=OfficeFiles(service.root)
+            attached=[store.info(file_id) for file_id in draft.files]
+            draft.message+='\n\nПрикреплённые файлы (для чтения используй office_read):\n'+json.dumps([{'file_id':f['id'],'name':f['name']} for f in attached],ensure_ascii=False)
         if draft.agent: service.registry.build(draft.agent)
         elif not draft.conversation: raise ValueError('Выберите агента или обычный чат')
         if draft.conversation and not draft.agent:

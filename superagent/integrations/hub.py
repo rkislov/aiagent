@@ -40,6 +40,18 @@ class Hub(WorkTools,Workflows):
         from .task_writes import WRITE_TOOLS
         if name in WRITE_TOOLS:raise PermissionError('Запись выполняется только через подтверждённый план')
         validate_payload(payload, BUILTINS[name].inputs)
+        if name=='image_generate':
+            from .model_media import generate_image
+            if self.root is None:raise ValueError('Нужно личное пространство')
+            return generate_image(self.root,self.config,payload)
+        from .knowledge import KNOWLEDGE_TOOLS,run_knowledge
+        if name in KNOWLEDGE_TOOLS:
+            if self.root is None:raise ValueError('Нужно личное пространство')
+            return run_knowledge(self.root,self.config,name,payload)
+        from .office import OFFICE_TOOLS,run_office
+        if name in OFFICE_TOOLS:
+            if self.root is None:raise ValueError('Нужно личное пространство документов')
+            return run_office(self.root,name,payload)
         if name == 'dialog_search':
             if self.root is None or self.registry is None:raise ValueError('Поиск диалогов доступен только в пространстве пользователя')
             from superagent.core.dialog_search import search_dialogs
