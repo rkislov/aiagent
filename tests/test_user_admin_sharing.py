@@ -46,9 +46,11 @@ def test_user_admin_routes_are_role_gated(platform):
  with TestClient(create_app(platform),base_url='http://localhost') as c:
   assert c.get('/api/users').status_code==401
   c.cookies.set('session',user_token)
+  assert not c.get('/api/workspace').json()['current_user']['admin']
   assert c.get('/api/users').status_code==403
   assert c.post('/api/users/manage',json={'action':'promote','username':'alice'}).status_code==403
   c.cookies.set('session',token)
+  assert c.get('/api/workspace').json()['current_user']['admin']
   response=c.get('/api/users');assert response.status_code==200 and len(response.json())==2
 
 
@@ -67,7 +69,7 @@ def test_shared_agent_uses_current_users_files_connections_and_memory(platform):
  a.runner.memory(a.registry.build(id_)).ensure('same','legal','Alice secret')
  assert b.runner.memory(agent).sessions(agent.name)==[]
  with pytest.raises(PermissionError):shared.unpublish(bob['id'],id_)
- with pytest.raises(ValueError):shared.publish(alice['id'],Agent(name='custom',model='demo:office',skills=['email_filter']))
+ with pytest.raises(ValueError):shared.publish(alice['id'],Agent(name='custom',model='demo:office',instructions='Тест',skills=['email_filter']))
  shared.unpublish(alice['id'],id_)
  with pytest.raises(ValueError):b.registry.build(id_)
 

@@ -35,3 +35,23 @@ def test_embedding_vectors_validate_count_order_and_finite_values(platform,monke
  assert embed(platform.config,['first','second'])==[[1.,0.],[0.,1.]]
  monkeypatch.setattr('superagent.integrations.knowledge.model_post',lambda *a,**kw:{'data':[{'index':0,'embedding':[float('nan')]}]})
  with pytest.raises(ValueError):embed(platform.config,['first'])
+
+
+@pytest.mark.parametrize('error,expected',[
+ ({'code':'invalid_value','param':'model','message':'private-api-key'},'снята с эксплуатации'),
+ ({'code':'billing_hard_limit_reached','message':'private-api-key'},'лимит'),
+ ({'code':'unknown_parameter','param':'output_format','message':'private-api-key'},'output_format'),
+])
+def test_model_errors_are_actionable_without_echoing_remote_messages(platform,monkeypatch,error,expected):
+ from pydantic import SecretStr
+ platform.config.providers['openai'].api_key=SecretStr('private-api-key')
+ client=httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(400,json={'error':error})))
+ monkeypatch.setattr('superagent.integrations.model_media.httpx.Client',lambda **kw:client)
+ with pytest.raises(ValueError) as result:model_post(platform.config,'openai','/images/generations',{})
+ assert expected in str(result.value) and 'private-api-key' not in str(result.value)
+
+
+def test_retired_image_model_is_rejected_before_paid_request(platform,monkeypatch):
+ platform.config.image_generation.model='gpt-image-1'
+ monkeypatch.setattr('superagent.integrations.model_media.model_post',lambda *a,**kw:pytest.fail('Retired model must not be requested'))
+ with pytest.raises(ValueError,match='снята'):generate_image(platform.root,platform.config,{'prompt':'test','size':'1024x1024'})

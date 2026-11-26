@@ -19,6 +19,7 @@ from pydantic import Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from superagent.gateway.models import Agent, StrictModel
+from superagent.gateway.config import EmbeddingConfig
 from superagent.gateway.registry import parse_skill
 from superagent.service import Platform
 from superagent.schedules import Schedule, Store, Scheduler, validate_target
@@ -36,7 +37,8 @@ class SkillTest(SkillDraft):
 
 
 class WebSetting(StrictModel):
-    web_enabled: bool
+    web_enabled: bool | None = None
+    knowledge_collections: list[str] | None = Field(default=None,max_length=20)
 
 
 class ChatRequest(StrictModel):
@@ -47,6 +49,7 @@ class ChatRequest(StrictModel):
     message: str = Field(min_length=1, max_length=100_000)
     transport: Literal["stream", "poll"] = "stream"
     web_enabled: bool | None = None
+    knowledge_collections: list[str] | None = Field(default=None,max_length=20)
     images: list[str] = Field(default_factory=list, max_length=4)
     files: list[str] = Field(default_factory=list,max_length=4)
 
@@ -309,6 +312,67 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         from superagent.integrations.knowledge import Knowledge
         return Knowledge(service.root).list()
 
+    @app.get('/api/knowledge/collections')
+    def knowledge_collections():
+        from superagent.integrations.knowledge import Knowledge
+        return Knowledge(service.root).collections()
+
+    @app.post('/api/knowledge/collections')
+    def create_knowledge_collection(draft: dict):
+        from superagent.integrations.knowledge import Knowledge
+        return Knowledge(service.root).create_collection(draft.get('name'),draft.get('description',''))
+
+    @app.get('/api/knowledge/collections/{collection_id}')
+    def knowledge_collection(collection_id: str):
+        from superagent.integrations.knowledge import Knowledge
+        return Knowledge(service.root).list([collection_id])
+
+    @app.delete('/api/knowledge/collections/{collection_id}')
+    def delete_knowledge_collection(collection_id: str,draft: Decision):
+        if not draft.approved:raise ValueError('Удаление требует подтверждения')
+        from superagent.integrations.knowledge import Knowledge
+        Knowledge(service.root).delete_collection(collection_id)
+        return {'ok':True}
+
+    @app.put('/api/knowledge/config')
+    def knowledge_config(draft: EmbeddingConfig):
+        from superagent.core.providers.pool import resolve_provider
+        from superagent.settings import update
+        provider=resolve_provider(service.config,draft.provider)
+        if provider is None or provider.type!='openai':raise ValueError('Выберите OpenAI-совместимый провайдер embeddings')
+        with registry_lock:update(service,{'embeddings':draft.model_dump()})
+        return draft.model_dump()
+
+    @app.post('/api/knowledge/collections/{collection_id}/index')
+    def index_knowledge_file(collection_id: str,draft: dict):
+        if draft.get('approved') is not True:raise ValueError('Нужно подтвердить передачу текста embedding-провайдеру')
+        from superagent.integrations.knowledge import Knowledge
+        result=Knowledge(service.root).index(service.config.model_copy(deep=True),draft.get('file_id'),collection_id)
+        service.audit.record(agent='__knowledge__',kind='skill',skill='knowledge_index',input={'collection_id':collection_id,'file_id':draft.get('file_id')},output=result)
+        return result
+
+    @app.delete('/api/knowledge/collections/{collection_id}/documents/{file_id}')
+    def forget_knowledge_file(collection_id: str,file_id: str,draft: Decision):
+        if not draft.approved:raise ValueError('Удаление требует подтверждения')
+        from superagent.integrations.knowledge import Knowledge
+        return Knowledge(service.root).forget(file_id,collection_id)
+
+    @app.post('/api/knowledge/collections/{collection_id}/note')
+    def add_knowledge_note(collection_id: str,draft: dict):
+        if draft.get('approved') is not True:raise ValueError('Нужно подтвердить передачу текста embedding-провайдеру')
+        from superagent.integrations.knowledge import Knowledge
+        from superagent.integrations.office_files import OfficeFiles
+        from superagent.integrations.office import create_bytes
+        title,text=draft.get('title',''),draft.get('text','')
+        if not isinstance(title,str) or not 1<=len(title.strip())<=100 or not isinstance(text,str) or not 1<=len(text.strip())<=50000:raise ValueError('Заголовок: до 100 символов; текст: до 50000')
+        store=Knowledge(service.root);store.validate_collections([collection_id])
+        if not service.config.embeddings.enabled:raise ValueError('Сначала включите embedding-модель')
+        filename=''.join('-' if c in '/\\\r\n\x00' else c for c in title.strip())+'.docx'
+        file=OfficeFiles(service.root).save(filename,create_bytes('docx',{'title':title,'blocks':[{'type':'paragraph','text':text[i:i+2000]} for i in range(0,len(text),2000)]}))
+        result=store.index(service.config.model_copy(deep=True),file['id'],collection_id)
+        service.audit.record(agent='__knowledge__',kind='skill',skill='knowledge_index',input={'collection_id':collection_id,'file_id':file['id']},output=result)
+        return result
+
     def shared_store():
         from superagent.shared_agents import SharedAgents
         return SharedAgents(owner.root)
@@ -350,6 +414,12 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def provider_presets():
         from superagent.gateway.provider_presets import PRESETS
         return PRESETS
+
+    @app.get('/api/providers/capabilities')
+    def provider_capabilities():
+        from superagent.core.providers.pool import effective_providers
+        from superagent.core.providers.capabilities import image_models
+        return {name:{'type':p.type,'image_models':image_models(p),'embedding_models':[m for m in p.models if 'embed' in m.lower()]} for name,p in effective_providers(service.config).items()}
 
     @app.put("/api/settings")
     def save_settings(draft: dict):
@@ -457,15 +527,20 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         import yaml
         return Agent.model_validate(yaml.safe_load((owner.root/'agents/lawyer_rf.yaml').read_text())).model_dump()
 
+    @app.get('/api/agent-templates/accountant_1c')
+    def accountant_template():
+        import yaml
+        return Agent.model_validate(yaml.safe_load((owner.root/'agents/accountant_1c.yaml').read_text())).model_dump()
+
     @app.get("/api/workspace")
-    def workspace():
+    def workspace(request: Request):
         with registry_lock:
             service.registry.scan()
             from superagent.core.chat_connections import available
             from superagent.core.providers.capabilities import supports_chat
             from superagent.core.providers.pool import effective_providers
             providers=effective_providers(service.config)
-            return {"chat_connections": available(service.config), "shared_agents":shared_store().list(),"agents": [a.model_dump() for a in service.registry.agents.values()],
+            return {"current_user":getattr(request.state,'user',None),"chat_connections": available(service.config), "shared_agents":shared_store().list(),"agents": [a.model_dump() for a in service.registry.agents.values()],
                     "skills": [s.model_dump() for s in service.registry.skills.values()],
                     "errors": service.registry.errors,
                     "builtin_skills": list(__import__("superagent.integrations.catalog", fromlist=["BUILTINS"]).BUILTINS),
@@ -545,7 +620,10 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.get('/api/conversations/{session_id}/settings')
     def conversation_settings(session_id: str):
-        return {'web_enabled': service.runner.conversation_memory().web(session_id)}
+        from superagent.integrations.knowledge import Knowledge
+        memory=service.runner.conversation_memory()
+        available={c['id'] for c in Knowledge(service.root).collections()}
+        return {'web_enabled': memory.web(session_id),'knowledge_collections':[id_ for id_ in memory.knowledge(session_id) if id_ in available]}
 
     @app.put('/api/conversations/{session_id}/settings')
     def update_conversation_settings(session_id: str, draft: WebSetting):
@@ -553,7 +631,10 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         with memory.connect() as db:
             if not db.execute('SELECT 1 FROM sessions WHERE id=?', (session_id,)).fetchone():
                 raise HTTPException(404, 'Dialog not found')
-        return {'web_enabled': memory.web(session_id, draft.web_enabled)}
+        if draft.knowledge_collections is not None:
+            from superagent.integrations.knowledge import Knowledge
+            memory.knowledge(session_id,Knowledge(service.root).validate_collections(draft.knowledge_collections))
+        return {'web_enabled': memory.web(session_id, draft.web_enabled),'knowledge_collections':memory.knowledge(session_id)}
 
     @app.get('/api/conversations/{session_id}')
     def conversation_history(session_id: str):
@@ -612,6 +693,9 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.post("/api/chat")
     async def chat(draft: ChatRequest, request: Request):
+        if draft.knowledge_collections is not None:
+            from superagent.integrations.knowledge import Knowledge
+            Knowledge(service.root).validate_collections(draft.knowledge_collections)
         if draft.files:
             from superagent.integrations.office_files import OfficeFiles
             store=OfficeFiles(service.root)
@@ -670,9 +754,9 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         def worker():
             try:
                 if draft.conversation:
-                    run = service.runner.run_conversation(draft.message, draft.model, attached_agent=draft.agent, session_id=draft.session_id, confirm=confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled, connections=draft.connections)
+                    run = service.runner.run_conversation(draft.message, draft.model, attached_agent=draft.agent, session_id=draft.session_id, confirm=confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled, connections=draft.connections,knowledge=draft.knowledge_collections)
                 else:
-                    run = service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled)
+                    run = service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled,knowledge=draft.knowledge_collections)
                 for event in run:
                     if cancellation.is_set():
                         break

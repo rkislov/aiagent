@@ -35,6 +35,14 @@ class Memory:
         with self.connect() as db:
             return [json.loads(row[0]) for row in db.execute("SELECT payload FROM messages WHERE session_id=? ORDER BY id", (session_id,))]
 
+    def knowledge(self,session_id,collections=None):
+        with self.connect() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS dialog_knowledge(id TEXT PRIMARY KEY,collections TEXT NOT NULL)')
+            if collections is not None:
+                db.execute('INSERT INTO dialog_knowledge VALUES(?,?) ON CONFLICT(id) DO UPDATE SET collections=excluded.collections',(session_id,json.dumps(list(collections))))
+            row=db.execute('SELECT collections FROM dialog_knowledge WHERE id=?',(session_id,)).fetchone()
+            return json.loads(row[0]) if row else []
+
     def append(self, session_id: str, message: dict):
         with self.connect() as db:
             db.execute("INSERT INTO messages(session_id, payload) VALUES(?,?)", (session_id, json.dumps(message, ensure_ascii=False)))

@@ -77,8 +77,8 @@ def test_web_settings_survive_history_reload_and_cannot_create_foreign_dialog(pl
     with TestClient(create_app(platform,authentication=False),base_url='http://localhost') as client:
         client.post('/api/chat',json={'conversation':True,'model':'demo:office','message':'test'})
         session=client.get('/api/conversations').json()[0]['id']
-        assert client.put('/api/conversations/'+session+'/settings',json={'web_enabled':True}).json()=={'web_enabled':True}
-        assert client.get('/api/conversations/'+session+'/settings').json()=={'web_enabled':True}
+        assert client.put('/api/conversations/'+session+'/settings',json={'web_enabled':True}).json()=={'web_enabled':True,'knowledge_collections':[]}
+        assert client.get('/api/conversations/'+session+'/settings').json()=={'web_enabled':True,'knowledge_collections':[]}
         assert client.put('/api/conversations/foreign/settings',json={'web_enabled':True}).status_code==404
         from superagent.core.memory import Memory
         assert Memory(platform.root/'data/conversations.db').web(session)

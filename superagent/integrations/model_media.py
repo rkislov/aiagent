@@ -9,6 +9,21 @@ from uuid import uuid4
 import httpx
 
 
+def api_error(status,error):
+    code=error.get('code') if isinstance(error,dict) else None
+    param=error.get('param') if isinstance(error,dict) else None
+    if code in ('billing_hard_limit_reached','billing_limit_user_error','insufficient_quota'):
+        return 'Достигнут лимит или исчерпана квота API. Проверьте баланс и лимиты расходов в кабинете провайдера.'
+    if param=='model' or code in ('model_not_found','model_deprecated','model_not_available'):
+        return 'Выбранная модель недоступна или снята с эксплуатации. Обновите каталог и выберите доступную модель в настройках.'
+    if code in ('invalid_api_key','authentication_error') or status==401:return 'API отклонил ключ. Проверьте сохранённый ключ и его права.'
+    if status==403:return 'Провайдер запретил запрос. Проверьте права ключа, доступ к модели, регион и необходимость подтверждения организации.'
+    if status==429:return 'API ограничил запросы. Проверьте квоту и повторите позже.'
+    if param in ('size','output_format','quality','n','dimensions','prompt'):
+        return 'API не принял параметр '+param+'. Проверьте совместимость параметров с выбранной моделью.'
+    return 'API модели отклонил запрос (HTTP '+str(status)+'). Проверьте модель, ключ, баланс и права доступа.'
+
+
 def model_post(config,provider,path,payload,*,limit=20_000_000,timeout=120):
     from superagent.core.providers.pool import resolve_provider
     from urllib.parse import urlsplit
@@ -19,7 +34,14 @@ def model_post(config,provider,path,payload,*,limit=20_000_000,timeout=120):
     try:
         with httpx.Client(timeout=timeout,trust_env=False,follow_redirects=False) as client:
             with client.stream('POST',cfg.base_url.rstrip('/')+path,headers={'Authorization':'Bearer '+cfg.key()},json=payload) as response:
-                if response.status_code!=200:raise ValueError('API модели отклонил запрос (HTTP '+str(response.status_code)+'). Проверьте модель, ключ, баланс и права доступа.')
+                if response.status_code!=200:
+                    body=bytearray()
+                    for chunk in response.iter_bytes():
+                        body.extend(chunk)
+                        if len(body)>64000:break
+                    try:error=json.loads(body).get('error',{}) if len(body)<=64000 else {}
+                    except (ValueError,AttributeError):error={}
+                    raise ValueError('HTTP '+str(response.status_code)+': '+api_error(response.status_code,error))
                 body=bytearray()
                 for chunk in response.iter_bytes():
                     body.extend(chunk)
@@ -40,6 +62,11 @@ def generate_image(root,config,payload):
     from PIL import Image
     settings=config.image_generation
     if not settings.enabled:raise ValueError('Генерация изображений выключена в настройках')
+    from superagent.core.providers.capabilities import RETIRED_IMAGE_MODELS
+    from superagent.core.providers.pool import resolve_provider
+    from urllib.parse import urlsplit
+    provider=resolve_provider(config,settings.provider)
+    if provider and urlsplit(provider.base_url).hostname=='api.openai.com' and settings.model in RETIRED_IMAGE_MODELS:raise ValueError('Модель '+settings.model+' снята с эксплуатации. Выберите доступную модель изображений в настройках.')
     prompt=payload['prompt'];size=payload['size']
     if not 1<=len(prompt.strip())<=10000 or size not in ('1024x1024','1536x1024','1024x1536'):raise ValueError('Нужен запрос до 10000 символов и размер 1024x1024, 1536x1024 или 1024x1536')
     directory=Path(root).resolve()/'data/images'

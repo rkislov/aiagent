@@ -125,14 +125,8 @@ class Registry:
         from superagent.sandbox.policy import resolve_permissions
         for skill_name in agent.skills:
             resolve_permissions(self.root, self.skills[skill_name].permissions)
-        # Tools are independent. If two tools use the same field, prohibit conflicting types.
-        fields: dict[str, str] = {}
-        for skill_name in agent.skills:
-            skill = self.skills[skill_name]
-            for field, kind in (skill.inputs | skill.outputs).items():
-                if field in fields and fields[field] != kind:
-                    raise ValueError(f"Incompatible type for shared field '{field}': {fields[field]} / {kind}")
-                fields[field] = kind
+        # Each tool has its own validated input/output schema. Equal field names
+        # in different tools do not denote shared state or require equal types.
         return agent
 
     def save_agent(self, agent: Agent):
