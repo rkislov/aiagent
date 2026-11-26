@@ -4,6 +4,8 @@ import json
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -13,8 +15,9 @@ import logging
 
 
 class Audit:
-    def __init__(self, root: Path, secrets: list[str], max_bytes=5_000_000, backups=3):
+    def __init__(self, root: Path, secrets: list[str], max_bytes=5_000_000, backups=3, *, user: str | None = None):
         self.root, self.secrets = root, [s for s in secrets if s]
+        self._user = ContextVar("audit_user", default=user)
         (root / "data").mkdir(parents=True, exist_ok=True)
         self.db = root / "data/audit.db"
         self.lock = threading.RLock()
@@ -36,8 +39,16 @@ class Audit:
                 value = value.replace(secret, "[REDACTED]")
         return value
 
+    @contextmanager
+    def as_user(self, user: str | None):
+        token = self._user.set(user)
+        try:
+            yield
+        finally:
+            self._user.reset(token)
+
     def record(self, *, agent: str, kind: str, skill: str | None = None, input=None, output=None, status="ok", duration_ms=0, session_id=None):
-        entry = self.redact({"time": datetime.now(timezone.utc).isoformat(), "agent": agent, "kind": kind,
+        entry = self.redact({"time": datetime.now(timezone.utc).isoformat(), "user": self._user.get(), "agent": agent, "kind": kind,
                              "skill": skill, "input": input, "output": output, "status": status,
                              "duration_ms": round(duration_ms, 2), "session_id": session_id})
         text = json.dumps(entry, ensure_ascii=False)

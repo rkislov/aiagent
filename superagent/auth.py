@@ -151,13 +151,15 @@ class Auth:
         from .service import Platform
         with self.lock:
             if user['id'] not in self.services:
+                with self.connect() as db:
+                    account = db.execute('SELECT username FROM users WHERE id=?', (user['id'],)).fetchone()
                 root=self.root/'data/users'/user['id']
                 root.mkdir(parents=True,exist_ok=True,mode=0o700)
                 (root/'.tenant').touch()
                 for folder in ('agents','skills'):
                     (root/folder).mkdir(exist_ok=True)
                 from .shared_agents import SharedAgents
-                self.services[user['id']]=Platform(root,shared_store=SharedAgents(self.root))
+                self.services[user['id']] = Platform(root, shared_store=SharedAgents(self.root), username=account[0] if account else None)
             from .gateway.config import load_config
             with self.connect() as db:admins=db.execute('SELECT id FROM users WHERE admin=1 AND disabled=0 ORDER BY username').fetchall()
             paths=[self.root/'data/users'/uid/'config.yaml' for (uid,) in admins]

@@ -62,7 +62,7 @@ def main():
             scoped = auth.service({'id':row[0]})
             scoped.close()
             workspace_root = scoped.root
-        app = Platform(workspace_root)
+        app = Platform(workspace_root, username=args.user)
         if args.command in ('status','config','models','audit','sessions') or (args.command=='agents' and args.action in ('list','show','create')) or (args.command=='channels' and args.action=='list'):
             cli_workspace.dispatch(args,app,console)
         elif args.command == "channels":

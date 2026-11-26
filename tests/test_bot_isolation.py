@@ -54,6 +54,16 @@ def test_bot_dialog_commands_and_web_state_are_per_user_and_dialog(platform):
     assert Dialogs(service,identity_key('bot',c,'bob')).current()==first
 
 
+def test_mattermost_audit_records_sender_in_their_workspace(platform):
+    c = cfg()
+    for sender in ('alice', 'bob'):
+        mattermost_reply(platform, 'bot', c, post(sender, 'hello'))
+        audit = user_service(platform, 'bot', c, sender).audit.query()
+        assert audit and {entry['user'] for entry in audit} == {f'Mattermost · {sender}'}
+    entry = platform.audit.record(agent='plain_chat', kind='model')
+    assert entry['user'] is None
+
+
 def test_web_status_overrides_old_history_and_restores_without_argument(platform):
     class Provider:
         def chat(self,messages,tools):
