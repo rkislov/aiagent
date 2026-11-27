@@ -71,6 +71,10 @@ class Decision(StrictModel):
     approved: bool
 
 
+class Feedback(StrictModel):
+    rating: Literal['good', 'bad'] | None
+
+
 @dataclass
 class Pending:
     details: dict
@@ -695,7 +699,16 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.get('/api/conversations/{session_id}')
     def conversation_history(session_id: str):
-        return service.runner.conversation_memory().load(session_id)
+        return service.runner.conversation_memory().load(session_id, include_message_ids=True)
+
+    def save_response_feedback(memory, agent, session_id, message_id, draft):
+        if not 1 <= message_id <= 2**63 - 1 or not memory.save_feedback(session_id, agent, message_id, draft.rating):
+            raise HTTPException(404, 'Ответ в этом диалоге не найден')
+        return {'rating': draft.rating}
+
+    @app.put('/api/conversations/{session_id}/messages/{message_id}/feedback')
+    def conversation_feedback(session_id: str, message_id: int, draft: Feedback):
+        return save_response_feedback(service.runner.conversation_memory(), '__conversation__', session_id, message_id, draft)
 
     @app.get("/api/sessions/{agent}")
     def sessions(agent: str):
@@ -707,7 +720,12 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         entity = service.registry.build(agent)
         memory = service.runner.memory(entity)
         memory.ensure(session_id, agent, "Диалог")
-        return memory.load(session_id)
+        return memory.load(session_id, include_message_ids=True)
+
+    @app.put('/api/sessions/{agent}/{session_id}/messages/{message_id}/feedback')
+    def agent_feedback(agent: str, session_id: str, message_id: int, draft: Feedback):
+        entity = service.registry.build(agent)
+        return save_response_feedback(service.runner.memory(entity), agent, session_id, message_id, draft)
 
     def approval_open(item):
         return not item.event.is_set() and time.monotonic() < item.deadline and not item.cancelled.is_set()

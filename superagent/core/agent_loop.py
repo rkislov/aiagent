@@ -138,7 +138,7 @@ class AgentRunner:
             messages.append(message)
             saved = ({**message, '_speaker': name, '_model': agent.model} if message['role'] != 'user' else {**message, '_connections': chat_connections}) if shared else message
             if message['role'] == 'user': saved = {**saved, '_web_enabled': web_enabled,'_knowledge_collections':knowledge}
-            memory.append(session_id, saved)
+            return memory.append(session_id, saved)
 
         def stopped():
             return cancelled is not None and cancelled.is_set()
@@ -177,10 +177,10 @@ class AgentRunner:
                 yield {"type": "error", "error": safe_error}
                 return
             self.audit.record(agent=name, kind="model", input=messages, output=message, duration_ms=(time.monotonic()-started)*1000, session_id=session_id)
-            append(message)
+            message_id = append(message)
             calls = message.get("tool_calls", [])
             if not calls:
-                yield {"type": "done", "content": message.get("content") or "", "session_id": session_id}
+                yield {"type": "done", "content": message.get("content") or "", "session_id": session_id, "message_id": message_id}
                 return
             for call in calls:
                 started = time.monotonic()

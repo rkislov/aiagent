@@ -100,6 +100,18 @@ def test_admin_audit_and_pending_approval_are_scoped_to_the_right_people(platfor
         assert len(executed) == 1
         assert any(event['type'] == 'confirmation_result' and event['approved'] for event in events)
 
+        reply = next(event for event in events if event['type'] == 'done')
+        session_path = '/api/conversations/' + reply['session_id']
+        feedback = session_path + f"/messages/{reply['message_id']}/feedback"
+        assert bob.put(feedback, json={'rating': 'bad'}).status_code == 404
+        assert admin.put(feedback, json={'rating': 'bad'}).status_code == 404
+        assert alice.put(feedback, json={'rating': 'good'}).json() == {'rating': 'good'}
+        saved = alice.get(session_path).json()[-1]
+        assert saved['_message_id'] == reply['message_id'] and saved['_feedback'] == 'good'
+        assert alice.put(feedback, json={'rating': 'bad'}).json() == {'rating': 'bad'}
+        assert alice.put(feedback, json={'rating': None}).json() == {'rating': None}
+        assert alice.get(session_path).json()[-1]['_feedback'] is None
+
         overview = admin.get('/api/audit/overview?scope=all&account=alice').json()
         assert overview['active'] == []
         assert {entry['user'] for entry in overview['events']} == {'alice'}

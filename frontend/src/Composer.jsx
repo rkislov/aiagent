@@ -15,27 +15,40 @@ async function photo(file){
 
 export default function Composer({input,setInput,busy,agent,send,stop,reportError,web,setWeb,webBusy=false}){
  const [images,setImages]=useState([]),[files,setFiles]=useState([]),[listening,setListening]=useState(false),[loading,setLoading]=useState(false);
- const picker=useRef(null),filePicker=useRef(null),recognition=useRef(null);
- useEffect(()=>()=>recognition.current?.abort(),[]);
+ const picker=useRef(null),filePicker=useRef(null),recognition=useRef(null),lifetime=useRef(null);
+ useEffect(()=>{
+  const controller=new AbortController();
+  lifetime.current=controller;
+  return ()=>{
+   controller.abort();
+   const speech=recognition.current;
+   if(speech){speech.onresult=speech.onerror=speech.onend=null;speech.abort();}
+  };
+ },[]);
  useEffect(()=>{setImages([]);setFiles([]);recognition.current?.abort();},[agent?.name]);
  useEffect(()=>{if(busy)recognition.current?.stop();},[busy]);
  async function choose(e){const files=Array.from(e.target.files||[]);e.target.value='';if(!files.length)return;
   if(images.length+files.length>4){reportError(Error('Можно прикрепить до четырёх фотографий'));return;}
-  setLoading(true);try{const selected=await Promise.all(files.map(photo));setImages(current=>[...current,...selected].slice(0,4));}catch(e){reportError(e)}finally{setLoading(false)}
+  const signal=lifetime.current.signal;
+  setLoading(true);
+  try{const selected=await Promise.all(files.map(photo));if(!signal.aborted)setImages(current=>[...current,...selected].slice(0,4));}
+  catch(error){if(!signal.aborted)reportError(error)}
+  finally{if(!signal.aborted)setLoading(false)}
  }
  async function documents(e){
   const selected=Array.from(e.target.files||[]);e.target.value='';
   if(files.length+selected.length>4){reportError(Error('До четырёх документов в сообщении'));return;}
+  const signal=lifetime.current.signal;
   setLoading(true);
   try{
    const uploaded=[];
    for(const file of selected){
     if(!/\.(docx|xlsx|pptx)$/i.test(file.name)||file.size>8000000)throw Error('DOCX, XLSX или PPTX размером до 8 МБ');
     const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});
-    const r=await fetch('/api/files',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,data})});const result=await r.json();if(!r.ok)throw Error(result.detail||'Не удалось загрузить документ');uploaded.push(result);
+    const r=await fetch('/api/files',{signal,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name,data})});const result=await r.json();if(!r.ok)throw Error(result.detail||'Не удалось загрузить документ');uploaded.push(result);
    }
-   setFiles(current=>[...current,...uploaded]);
-  }catch(e){reportError(e)}finally{setLoading(false)}
+   if(!signal.aborted)setFiles(current=>[...current,...uploaded]);
+  }catch(error){if(!signal.aborted)reportError(error)}finally{if(!signal.aborted)setLoading(false)}
  }
  function microphone(){
   if(listening){recognition.current?.stop();return;}
@@ -48,7 +61,7 @@ export default function Composer({input,setInput,busy,agent,send,stop,reportErro
   try{r.start();setListening(true)}catch(e){reportError(e)}
  }
  function submit(e){e?.preventDefault();if(busy||webBusy||loading||!agent||(!input.trim()&&!images.length&&!files.length))return;recognition.current?.stop();send(input.trim()||(files.length?'Изучи прикреплённые документы.':'Опиши прикреплённые фотографии.'),images.map(i=>i.url),web,files);setImages([]);setFiles([]);}
- return <div className="composer-wrap"><form className="composer" onSubmit={submit}>
+ return <div className="composer-wrap"><form className="composer floating-tile rounded-2xl" onSubmit={submit}>
   {!!files.length&&<div className="document-previews">{files.map(file=><span key={file.id}><a href={file.url}>{file.name}</a><button type="button" aria-label={'Убрать '+file.name} onClick={()=>setFiles(current=>current.filter(f=>f.id!==file.id))}><X size={14}/></button></span>)}</div>}
   {!!images.length&&<div className="photo-previews">{images.map((image,i)=><div className="photo-preview" key={i}><img src={image.url} alt={image.name}/><button type="button" aria-label={'Убрать '+image.name} onClick={()=>setImages(current=>current.filter((_,j)=>j!==i))}><X size={14}/></button></div>)}</div>}
   <textarea aria-label="Сообщение агенту" value={input} onChange={e=>setInput(e.target.value)} placeholder="Какую задачу выполним?" rows={2} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();submit();}}}/>
