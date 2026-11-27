@@ -100,7 +100,7 @@ def test_binary_upload_size_and_route_boundaries(platform):
   declared=c.post('/api/files',headers={**headers,'Content-Length':str(MAX_FILE+1)},content=b'')
   assert declared.status_code==413
   block=b' '*1_000_000
-  streamed=c.post('/api/files',headers=headers,content=(block for _ in range(26)))
+  streamed=c.post('/api/files',headers=headers,content=(block for _ in range(MAX_FILE//len(block)+1)))
   assert streamed.status_code==413
   assert c.post('/api/files',headers={**headers,'Origin':'https://other.example'},content=b'').status_code==403
   assert c.post('/api/chat',headers=headers,content=b'').status_code==415

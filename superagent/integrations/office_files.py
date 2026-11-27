@@ -12,7 +12,7 @@ from uuid import uuid4
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
-MAX_FILE = 25_000_000
+MAX_FILE = 20_000_000
 MIME = {'docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'}

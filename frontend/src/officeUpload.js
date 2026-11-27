@@ -1,4 +1,4 @@
-export const OFFICE_FILE_LIMIT_MB = 25;
+export const OFFICE_FILE_LIMIT_MB = 20;
 
 export function validateOfficeFile(file) {
   if (!file || !/\.(docx|xlsx|pptx)$/i.test(file.name) || !file.size) {
