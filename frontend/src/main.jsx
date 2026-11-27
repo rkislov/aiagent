@@ -305,7 +305,7 @@ function App({accountMenu}) {
       {Object.keys(workspace.errors).length > 0 && <div className="error-banner">Ошибки регистрации: {Object.keys(workspace.errors).join(', ')}. Проверьте файлы в рабочем каталоге.</div>}
       <PendingApprovals api={api} revision={approvalRevision} onDecision={markDecision} reportError={reportError}/>
       {page === 'knowledge' && <Knowledge api={api} notify={notify} reportError={reportError} onConnect={connectKnowledge}/>}
-      {page === 'users' && workspace.current_user?.admin && <div className="workspace-page"><div className="page-heading"><div><h1>Управление пользователями</h1><p>Учётные записи, роли и восстановление доступа.</p></div></div><UserManagement api={api} currentUser={workspace.current_user} notify={notify} reportError={reportError}/></div>}
+      {page === 'users' && workspace.current_user?.admin && <div className="workspace-page accounts-page"><UserManagement api={api} currentUser={workspace.current_user} notify={notify} reportError={reportError}/></div>}
       {page === 'connections' && <Connections api={api} currentUser={workspace.current_user} refresh={refresh} notify={notify} reportError={reportError}/>}
       {page === 'chat' && <>
         <ChatToolbar
