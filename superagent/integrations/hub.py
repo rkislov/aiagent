@@ -41,6 +41,9 @@ class Hub(WorkTools,Workflows):
         from .task_writes import WRITE_TOOLS
         if name in WRITE_TOOLS:raise PermissionError('Запись выполняется только через подтверждённый план')
         validate_payload(payload, BUILTINS[name].inputs)
+        from .security_audit import SECURITY_TOOLS, run_security
+        if name in SECURITY_TOOLS:
+            return run_security(name, payload)
         if name=='image_generate':
             from .model_media import generate_image
             if self.root is None:raise ValueError('Нужно личное пространство')

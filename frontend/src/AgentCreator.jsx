@@ -5,7 +5,7 @@ const templates=[
  ['lawyer_rf','Юрист РФ','Российское право и работа с договорами'],
  ['work_manager','Диспетчер задач','Задачи, сроки и подготовка релиза'],
  ['accountant_1c','Бухгалтер 1С','Чтение и проверка данных через OData'],
- ['security_auditor','Аудитор безопасности','Анализ кода, конфигураций и отчётов сканеров'],
+ ['security_auditor','Аудитор безопасности','Аудит сайтов по заголовкам, настройкам cookie и отчётам ZAP'],
 ];
 
 export default function AgentCreator({api,model,onCreate,reportError}){
