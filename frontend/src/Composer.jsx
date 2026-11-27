@@ -1,6 +1,6 @@
 import React,{useState,useRef,useEffect} from 'react';
 import {ImagePlus,Paperclip,Mic,Globe,X,ArrowUp,Square,Circle} from 'lucide-react';
-import {OFFICE_FILE_LIMIT_MB, uploadOfficeFile, validateOfficeFile} from './officeUpload';
+import {OFFICE_FILE_LIMIT_MIB, uploadOfficeFile, validateOfficeFile} from './officeUpload';
 
 async function photo(file){
  if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>15_000_000)throw Error('Выберите JPEG, PNG или WebP размером до 15 МБ');
@@ -65,7 +65,7 @@ export default function Composer({input,setInput,busy,agent,send,stop,reportErro
   {!!images.length&&<div className="photo-previews">{images.map((image,i)=><div className="photo-preview" key={i}><img src={image.url} alt={image.name}/><button type="button" aria-label={'Убрать '+image.name} onClick={()=>setImages(current=>current.filter((_,j)=>j!==i))}><X size={14}/></button></div>)}</div>}
   <textarea aria-label="Сообщение агенту" value={input} onChange={e=>setInput(e.target.value)} placeholder="Какую задачу выполним?" rows={2} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();submit();}}}/>
   <div className="composer-bottom"><div className="composer-tools"><input hidden ref={picker} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={choose}/>
-   <input hidden ref={filePicker} type="file" accept=".docx,.xlsx,.pptx" multiple onChange={documents}/><button type="button" className="composer-tool" title={`Прикрепить Word, Excel или PowerPoint (до ${OFFICE_FILE_LIMIT_MB} МБ)`} aria-label="Прикрепить документ" disabled={busy||loading||files.length>=4} onClick={()=>filePicker.current?.click()}><Paperclip size={19}/></button>
+   <input hidden ref={filePicker} type="file" accept=".docx,.xlsx,.pptx" multiple onChange={documents}/><button type="button" className="composer-tool" title={`Прикрепить Word, Excel или PowerPoint (до ${OFFICE_FILE_LIMIT_MIB} МиБ)`} aria-label="Прикрепить документ" disabled={busy||loading||files.length>=4} onClick={()=>filePicker.current?.click()}><Paperclip size={19}/></button>
    <button type="button" className="composer-tool" title="Прикрепить фото (до 4). После отправки фото получит выбранная модель." aria-label="Прикрепить фото" disabled={busy||loading||images.length===4} onClick={()=>picker.current?.click()}><ImagePlus size={19}/></button>
    <button type="button" className={'composer-tool '+(listening?'recording':'')} title="Голосовой ввод: браузер может использовать сервис распознавания речи" aria-label={listening?'Остановить микрофон':'Голосовой ввод'} aria-pressed={listening} disabled={busy} onClick={microphone}><Mic size={19}/></button>
    <button type="button" className={'composer-tool '+(web?'active':'')} title={web?'Выключить веб-поиск и чтение страниц':'Включить веб-поиск и чтение страниц'} aria-label="Веб-поиск и чтение страниц" aria-pressed={web} disabled={busy||webBusy} onClick={()=>setWeb(!web)}><Globe size={19}/>{web&&<span>Веб</span>}</button>

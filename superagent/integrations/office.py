@@ -163,10 +163,11 @@ def replace_text(paragraph,old,new):
 
 def edit_bytes(extension,data,changes):
     bounded(changes)
+    stream = io.BytesIO(data) if isinstance(data, (bytes, bytearray, memoryview)) else data
     if extension=='docx':
         from docx import Document
         fields(changes,{'replace','append_blocks'})
-        document=Document(io.BytesIO(data))
+        document=Document(stream)
         replacements=changes.get('replace',[])
         if not isinstance(replacements,list) or len(replacements)>100:raise ValueError('До 100 замен')
         for entry in replacements:
@@ -179,7 +180,7 @@ def edit_bytes(extension,data,changes):
     elif extension=='xlsx':
         from openpyxl import load_workbook
         fields(changes,{'cells'})
-        document=load_workbook(io.BytesIO(data),keep_links=False)
+        document=load_workbook(stream,keep_links=False)
         cells=changes.get('cells',[])
         if not isinstance(cells,list) or len(cells)>2000:raise ValueError('До 2000 изменений ячеек')
         for entry in cells:
@@ -192,7 +193,7 @@ def edit_bytes(extension,data,changes):
     elif extension=='pptx':
         from pptx import Presentation
         fields(changes,{'replace','append_slides'})
-        document=Presentation(io.BytesIO(data))
+        document=Presentation(stream)
         replacements=changes.get('replace',[])
         if not isinstance(replacements,list) or len(replacements)>100:raise ValueError('До 100 замен')
         for entry in replacements:
@@ -215,6 +216,7 @@ def edit_bytes(extension,data,changes):
 
 
 def extract(extension,data):
+    stream = io.BytesIO(data) if isinstance(data, (bytes, bytearray, memoryview)) else data
     entries=[];size=0
     def add(path,value):
         nonlocal size
@@ -224,7 +226,7 @@ def extract(extension,data):
         entries.append({'path':path,'value':value})
     if extension=='docx':
         from docx import Document
-        document=Document(io.BytesIO(data))
+        document=Document(stream)
         for i,p in enumerate(document.paragraphs):add(f'paragraph/{i+1}',p.text)
         for t,table in enumerate(document.tables):
             for i,row in enumerate(table.rows):
@@ -234,7 +236,7 @@ def extract(extension,data):
                 for j,p in enumerate(container.paragraphs):add(f'{label}/{i+1}/{j+1}',p.text)
     elif extension=='xlsx':
         from openpyxl import load_workbook
-        document=load_workbook(io.BytesIO(data),read_only=True,data_only=False,keep_links=False)
+        document=load_workbook(stream,read_only=True,data_only=False,keep_links=False)
         try:
             for sheet in document:
                 add('sheet/'+sheet.title,sheet.title)
@@ -245,7 +247,7 @@ def extract(extension,data):
         finally:document.close()
     else:
         from pptx import Presentation
-        document=Presentation(io.BytesIO(data))
+        document=Presentation(stream)
         if len(document.slides)>100:raise ValueError('Презентация содержит более 100 слайдов')
         for i,slide in enumerate(document.slides):
             add(f'slide/{i+1}', '')
@@ -264,18 +266,19 @@ def run_office(root,name,payload):
     if name=='office_create':
         extension=payload['format']
         return {'file':store.save(payload['name'],create_bytes(extension,payload['content']))} if payload['name'].lower().endswith('.'+extension) else _bad_extension()
-    row,data=store.read(payload['file_id'])
-    if name=='office_edit':
-        if not payload['name'].lower().endswith('.'+row['extension']):return _bad_extension()
-        return {'file':store.save(payload['name'],edit_bytes(row['extension'],data,payload['changes']),row['id'])}
-    entries=extract(row['extension'],data)
+    with store.open(payload['file_id']) as (row, stream):
+        if name=='office_edit':
+            if not payload['name'].lower().endswith('.'+row['extension']):return _bad_extension()
+            return {'file':store.save(payload['name'],edit_bytes(row['extension'],stream,payload['changes']),row['id'])}
+        entries=extract(row['extension'],stream)
     if name=='office_read':
         start,limit=payload['offset'],payload['limit']
         if not 0<=start<=20000 or not 1<=limit<=500:raise ValueError('offset: 0–20000; limit: 1–500')
         return {'file':row,'entries':entries[start:start+limit],'total':len(entries),'next_offset':start+limit if start+limit<len(entries) else None,'scope':'Текст, таблицы и формулы; без OCR, расчёта формул и анализа оформления.'}
-    other,other_data=store.read(payload['other_id'])
-    if row['extension']!=other['extension']:raise ValueError('Сравнивайте документы одного формата')
-    left={e['path']:e['value'] for e in entries};right={e['path']:e['value'] for e in extract(other['extension'],other_data)}
+    left={e['path']:e['value'] for e in entries}
+    with store.open(payload['other_id']) as (other, stream):
+        if row['extension']!=other['extension']:raise ValueError('Сравнивайте документы одного формата')
+        right={e['path']:e['value'] for e in extract(other['extension'],stream)}
     changed=[{'path':key,'before':left.get(key),'after':right.get(key),'kind':'added' if key not in left else 'removed' if key not in right else 'changed'} for key in sorted(left.keys()|right.keys()) if key not in left or key not in right or left[key]!=right[key]]
     return {'equal':not changed,'total_changes':len(changed),'changes':changed[:500],'truncated':len(changed)>500,'scope':'Сравнение текста, таблиц и формул по позиции; оформление, изображения и вычисленные значения формул не сравниваются.'}
 

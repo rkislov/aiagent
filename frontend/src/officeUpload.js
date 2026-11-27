@@ -1,11 +1,11 @@
-export const OFFICE_FILE_LIMIT_MB = 25;
+export const OFFICE_FILE_LIMIT_MIB = 100;
 
 export function validateOfficeFile(file) {
   if (!file || !/\.(docx|xlsx|pptx)$/i.test(file.name) || !file.size) {
     throw new Error('Выберите непустой файл DOCX, XLSX или PPTX.');
   }
-  if (file.size > OFFICE_FILE_LIMIT_MB * 1_000_000) {
-    throw new Error(`Файл больше ${OFFICE_FILE_LIMIT_MB} МБ. Разделите документ или уменьшите размер вложенных изображений.`);
+  if (file.size > OFFICE_FILE_LIMIT_MIB * 1024 * 1024) {
+    throw new Error(`Файл больше ${OFFICE_FILE_LIMIT_MIB} МиБ. Разделите документ или уменьшите размер вложенных изображений.`);
   }
 }
 

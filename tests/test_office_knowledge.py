@@ -66,11 +66,13 @@ def test_large_binary_document_can_be_loaded_into_knowledge(platform, monkeypatc
  from PIL import Image
 
  image=io.BytesIO()
- Image.new('RGB',(2000,2000),'white').save(image,format='PNG',compress_level=0)
+ with Image.new('RGB',(4400,4400),'white') as picture:
+  picture.save(image,format='PNG',compress_level=0)
  image.seek(0)
  document=Document()
  document.add_paragraph('Отчёт о проверке')
  document.add_picture(image)
+ image.close()
  buffer=io.BytesIO()
  document.save(buffer)
  # Use stored ZIP entries to retain the size of the document's image.
@@ -78,7 +80,7 @@ def test_large_binary_document_can_be_loaded_into_knowledge(platform, monkeypatc
   with zipfile.ZipFile(stored,'w') as target:
    for path in source.namelist():target.writestr(path,source.read(path))
   data=stored.getvalue()
- assert 10_000_000 < len(data) < MAX_FILE
+ assert 50 * 1024 * 1024 < len(data) < MAX_FILE
 
  monkeypatch.setattr('superagent.integrations.knowledge.embed',lambda config,texts:[[1.0,0.0] for _ in texts])
  platform.config.embeddings.enabled=True
@@ -89,18 +91,21 @@ def test_large_binary_document_can_be_loaded_into_knowledge(platform, monkeypatc
   file=response.json()
   assert file['name']=='Отчёт.docx' and file['size']==len(data)
   assert c.get(file['url']).content==data
+  read=run_office(platform.root,'office_read',{'file_id':file['id'],'offset':0,'limit':10})
+  assert read['entries'][0]['value']=='Отчёт о проверке'
   indexed=c.post('/api/knowledge/collections/default/index',json={'file_id':file['id'],'approved':True})
   assert indexed.status_code==200,indexed.json()
   assert indexed.json()['indexed']
 
 
-def test_binary_upload_size_and_route_boundaries(platform):
+def test_binary_upload_size_and_route_boundaries(platform, monkeypatch):
  headers={'Content-Type':'application/octet-stream','X-Office-Filename':'report.docx'}
  with TestClient(create_app(platform,authentication=False),base_url='http://localhost') as c:
   declared=c.post('/api/files',headers={**headers,'Content-Length':str(MAX_FILE+1)},content=b'')
   assert declared.status_code==413
-  block=b' '*1_000_000
-  streamed=c.post('/api/files',headers=headers,content=(block for _ in range(MAX_FILE//len(block)+1)))
+  # Exercise the streaming cap without allocating a 100 MiB body in TestClient.
+  monkeypatch.setattr('superagent.web.app.MAX_FILE', 10)
+  streamed=c.post('/api/files',headers=headers,content=iter([b'123456', b'78901']))
   assert streamed.status_code==413
   assert c.post('/api/files',headers={**headers,'Origin':'https://other.example'},content=b'').status_code==403
   assert c.post('/api/chat',headers=headers,content=b'').status_code==415
