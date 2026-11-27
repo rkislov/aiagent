@@ -6,7 +6,7 @@ import json
 import queue
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -73,6 +73,8 @@ class Decision(StrictModel):
 
 @dataclass
 class Pending:
+    details: dict
+    deadline: float
     event: threading.Event = field(default_factory=threading.Event)
     approved: bool = False
     cancelled: threading.Event | None = None
@@ -317,6 +319,14 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         from superagent.integrations.knowledge import Knowledge
         return Knowledge(service.root).collections()
 
+    @app.get('/api/knowledge/graph')
+    def knowledge_graph(collection: str = Query('', max_length=32), offset: int = Query(0, ge=0, le=5000)):
+        from superagent.integrations.knowledge import Knowledge
+        from superagent.integrations.knowledge_graph import graph
+        with service.audit.track('__knowledge__', 'skill', 'knowledge_graph'):
+            return JSONResponse(graph(Knowledge(service.root), collection or None, offset=offset),
+                                headers={'Cache-Control': 'no-store'})
+
     @app.post('/api/knowledge/collections')
     def create_knowledge_collection(draft: dict):
         from superagent.integrations.knowledge import Knowledge
@@ -347,7 +357,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def index_knowledge_file(collection_id: str,draft: dict):
         if draft.get('approved') is not True:raise ValueError('Нужно подтвердить передачу текста embedding-провайдеру')
         from superagent.integrations.knowledge import Knowledge
-        result=Knowledge(service.root).index(service.config.model_copy(deep=True),draft.get('file_id'),collection_id)
+        with service.audit.track('__knowledge__', 'skill', 'knowledge_index'):
+            result = Knowledge(service.root).index(service.config.model_copy(deep=True), draft.get('file_id'), collection_id)
         service.audit.record(agent='__knowledge__',kind='skill',skill='knowledge_index',input={'collection_id':collection_id,'file_id':draft.get('file_id')},output=result)
         return result
 
@@ -369,7 +380,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         if not service.config.embeddings.enabled:raise ValueError('Сначала включите embedding-модель')
         filename=''.join('-' if c in '/\\\r\n\x00' else c for c in title.strip())+'.docx'
         file=OfficeFiles(service.root).save(filename,create_bytes('docx',{'title':title,'blocks':[{'type':'paragraph','text':text[i:i+2000]} for i in range(0,len(text),2000)]}))
-        result=store.index(service.config.model_copy(deep=True),file['id'],collection_id)
+        with service.audit.track('__knowledge__', 'skill', 'knowledge_index'):
+            result = store.index(service.config.model_copy(deep=True), file['id'], collection_id)
         service.audit.record(agent='__knowledge__',kind='skill',skill='knowledge_index',input={'collection_id':collection_id,'file_id':file['id']},output=result)
         return result
 
@@ -427,6 +439,21 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         with registry_lock:
             return update(service, draft)
 
+    @app.get('/api/connections/settings')
+    def source_settings():
+        from superagent.settings import public
+        settings = public(service.config)
+        return {key: settings[key] for key in ('connections', 'channels')}
+
+    @app.put('/api/connections/settings')
+    def save_source_settings(draft: dict):
+        if draft.keys() - {'connections', 'channels'}:
+            raise ValueError('Здесь можно изменить только источники и мессенджеры')
+        from superagent.settings import update
+        with registry_lock:
+            settings = update(service, draft)
+        return {key: settings[key] for key in ('connections', 'channels')}
+
     @app.post("/api/providers/test")
     def test_provider(draft: dict):
         from superagent.core.providers.factory import make_provider
@@ -436,7 +463,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         if cfg and cfg.type=='openai' and cfg.base_url.startswith('https://api.openai.com') and not cfg.key():raise ValueError('API-ключ OpenAI не сохранён. Введите его в карточке модели и дождитесь сообщения о сохранении ключа.')
         model = make_provider(selected, service.config)
         try:
-            result = model.chat([{"role": "user", "content": "Reply OK"}], [])
+            with service.audit.track('__test__', 'model'):
+                result = model.chat([{"role": "user", "content": "Reply OK"}], [])
             return {"ok": True, "response": result.get("content")}
         except Exception as exc:
             import re
@@ -512,7 +540,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         from superagent.integrations.task_writes import WRITE_TOOLS
         if name in WRITE_TOOLS: raise ValueError("Запись требует предпросмотра и подтверждения в чате или CLI")
         if name == "ssh_run": raise ValueError("Выполняйте SSH через агента с подтверждением команды")
-        result = service.runner.builtins.run(name, draft)
+        with service.audit.track('__test__', 'skill', name):
+            result = service.runner.builtins.run(name, draft)
         service.audit.record(agent="__test__", kind="skill", skill=name, input=draft, output=result)
         return result
 
@@ -590,7 +619,8 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
             raise HTTPException(429, "Too many concurrent tests")
         started = time.monotonic()
         try:
-            result = service.runner.executor.run(skill, draft.input, draft.code)
+            with service.audit.track('__test__', 'skill', skill.name):
+                result = service.runner.executor.run(skill, draft.input, draft.code)
             status = "ok"
         except Exception as exc:
             result, status = {"error": service.audit.redact(str(exc))}, "error"
@@ -603,6 +633,33 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     def audit(agent: str | None = None, skill: str | None = None, status: str | None = None, date: str | None = None,
               limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
         return service.audit.query(agent, skill, status, date, limit, offset)
+
+    @app.get('/api/audit/overview')
+    def audit_overview(request: Request, scope: Literal['mine', 'all'] = 'mine', account: str = Query('', max_length=41),
+                       agent: str = Query('', max_length=120), skill: str = Query('', max_length=120),
+                       status: str = Query('', max_length=32), date: str = Query('', pattern=r'^(\d{4}-\d{2}-\d{2})?$'),
+                       limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0, le=10000)):
+        if scope == 'all':
+            if not auth:
+                raise PermissionError('Только администратор')
+            from superagent.audit.overview import overview
+            result = overview(auth, request.state.user['id'], account=account, agent=agent, skill=skill,
+                              status=status, date=date, limit=limit, offset=offset)
+        else:
+            result = {'events': service.audit.query(agent, skill, status, date, limit, offset),
+                      'active': service.audit.active(), 'accounts': []}
+        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/audit/request')
+    def audit_request(request: Request, account: str = Query(pattern=r'^[a-z][a-z0-9_]{2,40}$'),
+                      event_id: int = Query(ge=1), guest: str = Query('', pattern=r'^([a-f0-9]{64})?$')):
+        if not auth:
+            raise PermissionError('Только администратор')
+        from superagent.audit.overview import request_text
+        text = request_text(auth, request.state.user['id'], account, event_id, guest)
+        if text is None:
+            raise HTTPException(404, 'Запрос не найден')
+        return JSONResponse({'text': text}, headers={'Cache-Control': 'no-store'})
 
     @app.get('/api/conversations')
     def conversations():
@@ -652,13 +709,23 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         memory.ensure(session_id, agent, "Диалог")
         return memory.load(session_id)
 
+    def approval_open(item):
+        return not item.event.is_set() and time.monotonic() < item.deadline and not item.cancelled.is_set()
+
+    @app.get('/api/confirmations')
+    def open_confirmations(request: Request):
+        requester = request.state.user['id'] if auth else None
+        with pending_lock:
+            approvals = [item.details for item in pending.values() if item.owner == requester and approval_open(item)]
+        return JSONResponse(approvals, headers={'Cache-Control': 'no-store'})
+
     @app.post("/api/confirmations/{approval_id}")
     def decide(approval_id: str, decision: Decision, request: Request):
         with pending_lock:
             item = pending.get(approval_id)
             if item is not None and auth and item.owner != request.state.user["id"]:
                 raise HTTPException(404,"Confirmation not found")
-            if item is None or item.event.is_set() or item.cancelled.is_set():
+            if item is None or not approval_open(item):
                 raise HTTPException(404, "Confirmation expired or already resolved")
             item.approved = decision.approved
             item.event.set()
@@ -743,13 +810,15 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
                 item = pending.get(event["id"])
             if item is None:
                 return False
-            deadline = time.monotonic() + service.config.confirmation_timeout
-            while not cancellation.is_set() and time.monotonic() < deadline:
+            while not cancellation.is_set() and time.monotonic() < item.deadline:
                 if item.event.wait(.25):
                     break
             with pending_lock:
                 pending.pop(event["id"], None)
-            return item.event.is_set() and item.approved and not cancellation.is_set()
+            expired = not item.event.is_set()
+            approved = not expired and item.approved and not cancellation.is_set()
+            emit({'type': 'confirmation_result', 'id': event['id'], 'approved': approved, 'expired': expired})
+            return approved
 
         def worker():
             try:
@@ -757,14 +826,17 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
                     run = service.runner.run_conversation(draft.message, draft.model, attached_agent=draft.agent, session_id=draft.session_id, confirm=confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled, connections=draft.connections,knowledge=draft.knowledge_collections)
                 else:
                     run = service.runner.run(draft.agent, draft.message, draft.session_id, confirm, cancelled=cancellation, images=draft.images, web_enabled=draft.web_enabled,knowledge=draft.knowledge_collections)
-                for event in run:
-                    if cancellation.is_set():
-                        break
-                    if event["type"] == "confirmation":
-                        with pending_lock:
-                            pending[event["id"]] = Pending(cancelled=cancellation, owner=request.state.user["id"] if auth else None)
-                            ids.add(event["id"])
-                    emit(event)
+                with closing(run):
+                    for event in run:
+                        if cancellation.is_set():
+                            break
+                        if event['type'] == 'confirmation':
+                            deadline = time.monotonic() + service.config.confirmation_timeout
+                            with pending_lock:
+                                pending[event['id']] = Pending(details=event, deadline=deadline, cancelled=cancellation,
+                                                               owner=request.state.user['id'] if auth else None)
+                                ids.add(event['id'])
+                        emit(event)
             except Exception as exc:
                 emit({"type": "error", "error": service.audit.redact(str(exc))})
             finally:
