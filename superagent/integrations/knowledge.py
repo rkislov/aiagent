@@ -102,8 +102,8 @@ class Knowledge:
 
     def index(self,config,file_id,collection_id='default'):
         self.validate_collections([collection_id])
-        row,data=OfficeFiles(self.root).read(file_id)
-        entries=extract(row['extension'],data)
+        with OfficeFiles(self.root).open(file_id) as (row, stream):
+            entries=extract(row['extension'],stream)
         content='\n'.join(str(e['path'])+': '+str(e['value']) for e in entries)
         chunks=[content[i:i+2000] for i in range(0,len(content),1800)]
         if not chunks:

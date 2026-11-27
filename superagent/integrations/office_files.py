@@ -1,33 +1,41 @@
 """Private, immutable Office attachments. No caller-supplied filesystem paths."""
 import hashlib
 import io
-import json
+import os
 import re
 import sqlite3
 import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
-MAX_FILE = 25_000_000
+MAX_FILE_MIB = 100
+MAX_FILE = MAX_FILE_MIB * 1024 * 1024
+MAX_EXPANDED_MIB = 200
+COPY_CHUNK_SIZE = 1024 * 1024
 MIME = {'docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'}
 
 
 def check_package(data, extension):
+    _check_package(io.BytesIO(data), len(data), extension)
+
+
+def _check_package(stream, size, extension):
     if extension not in MIME:
         raise ValueError('Поддерживаются только DOCX, XLSX и PPTX')
-    if not 0 < len(data) <= MAX_FILE:
-        raise ValueError(f'Нужен непустой файл размером до {MAX_FILE // 1_000_000} МБ')
+    if not 0 < size <= MAX_FILE:
+        raise ValueError(f'Нужен непустой файл размером до {MAX_FILE_MIB} МиБ')
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        with zipfile.ZipFile(stream) as archive:
             entries=archive.infolist()
-            if len(entries)>2000 or sum(x.file_size for x in entries)>50_000_000:
-                raise ValueError('Слишком большой распакованный документ')
+            if len(entries) > 2000 or sum(x.file_size for x in entries) > MAX_EXPANDED_MIB * 1024 * 1024:
+                raise ValueError(f'Распакованный документ превышает {MAX_EXPANDED_MIB} МиБ или содержит больше 2000 частей')
             names=[x.filename for x in entries]
             required={'docx':'word/document.xml','xlsx':'xl/workbook.xml','pptx':'ppt/presentation.xml'}[extension]
             if required not in names or '[Content_Types].xml' not in names or len(set(names))!=len(names):
@@ -77,40 +85,60 @@ class OfficeFiles:
         return {**dict(row),'url':'/api/files/'+row['id']+'/download'}
 
     def path(self,file_id):
-        row=self.info(file_id)
+        return self._path(self.info(file_id))
+
+    def _path(self,row):
         path=self.directory/(row['id']+'.'+row['extension'])
         if path.is_symlink() or not path.is_file():raise ValueError('Файл недоступен')
         return path
 
-    def read(self,file_id):
-        path=self.path(file_id)
-        if path.stat().st_size>MAX_FILE:raise ValueError('Файл слишком большой')
-        data=path.read_bytes()
+    @contextmanager
+    def open(self,file_id):
         row=self.info(file_id)
-        if hashlib.sha256(data).hexdigest()!=row['sha256']:raise ValueError('Содержимое файла изменилось')
-        check_package(data,row['extension'])
-        return row,data
+        with self._path(row).open('rb') as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if size > MAX_FILE:
+                raise ValueError('Файл слишком большой')
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != row['sha256']:
+                raise ValueError('Содержимое файла изменилось')
+            stream.seek(0)
+            _check_package(stream, size, row['extension'])
+            stream.seek(0)
+            yield row, stream
+
+    def read(self,file_id):
+        with self.open(file_id) as (row, stream):
+            return row, stream.read()
 
     def list(self):
         with self.connect() as db:rows=db.execute('SELECT id FROM files ORDER BY created DESC LIMIT 100').fetchall()
         return [self.info(row['id']) for row in rows]
 
     def save(self,name,data,source=''):
+        return self.save_stream(name, io.BytesIO(data), source)
+
+    def save_stream(self,name,stream,source=''):
         if not isinstance(name,str) or len(name)>180 or any(c in name for c in '/\\\r\n\x00') or not name.strip():
             raise ValueError('Укажите имя файла без каталогов (до 180 символов)')
         extension=Path(name).suffix.lstrip('.').lower()
-        check_package(data,extension)
+        size = stream.seek(0, io.SEEK_END)
+        stream.seek(0)
+        _check_package(stream, size, extension)
+        stream.seek(0)
+        digest = hashlib.sha256()
         file_id=uuid4().hex
         path=self.directory/(file_id+'.'+extension)
         try:
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                count,size=db.execute('SELECT count(*),coalesce(sum(size),0) FROM files').fetchone()
-                if count>=500 or size+len(data)>250_000_000:raise ValueError('Хранилище документов заполнено (500 файлов / 250 МБ)')
+                count,used=db.execute('SELECT count(*),coalesce(sum(size),0) FROM files').fetchone()
+                if count>=500 or used+size>250_000_000:raise ValueError('Хранилище документов заполнено (500 файлов / 250 МБ)')
                 with path.open('xb') as handle:
                     path.chmod(0o600)
-                    handle.write(data)
-                db.execute('INSERT INTO files VALUES(?,?,?,?,?,?,?)',(file_id,name,extension,len(data),hashlib.sha256(data).hexdigest(),time.time(),source))
+                    while chunk := stream.read(COPY_CHUNK_SIZE):
+                        digest.update(chunk)
+                        handle.write(chunk)
+                db.execute('INSERT INTO files VALUES(?,?,?,?,?,?,?)',(file_id,name,extension,size,digest.hexdigest(),time.time(),source))
         except Exception:
             path.unlink(missing_ok=True)
             raise

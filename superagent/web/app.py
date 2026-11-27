@@ -10,6 +10,7 @@ import time
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryFile
 from typing import Literal
 from urllib.parse import unquote
 from uuid import uuid4
@@ -18,18 +19,19 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import Field, field_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from superagent.gateway.models import Agent, StrictModel
 from superagent.gateway.config import EmbeddingConfig
 from superagent.gateway.registry import parse_skill
-from superagent.integrations.office_files import MAX_FILE, OfficeFiles
+from superagent.integrations.office_files import MAX_FILE, MAX_FILE_MIB, OfficeFiles
 from superagent.service import Platform
 from superagent.schedules import Schedule, Store, Scheduler, validate_target
 
 OFFICE_BODY_TYPE = 'application/octet-stream'
 LEGACY_OFFICE_BODY_LIMIT = 11_000_000
-OFFICE_BODY_ERROR = f'Документ превышает лимит загрузки. Загружайте файлы до {MAX_FILE // 1_000_000} МБ.'
+OFFICE_BODY_ERROR = f'Документ превышает лимит загрузки. Загружайте файлы до {MAX_FILE_MIB} МиБ.'
 
 
 class SkillDraft(StrictModel):
@@ -103,6 +105,7 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     model_discoveries = {}
     model_generations = {}
     tests_lock = threading.Semaphore(2)
+    office_upload_slots = asyncio.Semaphore(4)
     streams_lock = threading.Lock()
     active_streams: set[threading.Event] = set()
     stream_users = {}
@@ -300,23 +303,30 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
     @app.post('/api/files')
     async def upload_file(request: Request):
         media_type = request.headers['content-type'].split(';', 1)[0].strip().lower()
-        binary = media_type == OFFICE_BODY_TYPE
-        maximum = MAX_FILE if binary else LEGACY_OFFICE_BODY_LIMIT
+        if media_type == OFFICE_BODY_TYPE:
+            name = unquote(request.headers.get('x-office-filename', ''), errors='strict')
+            async with office_upload_slots:
+                with TemporaryFile() as upload:
+                    received = 0
+                    async for chunk in request.stream():
+                        received += len(chunk)
+                        if received > MAX_FILE:
+                            raise HTTPException(413, OFFICE_BODY_ERROR)
+                        if chunk:
+                            await run_in_threadpool(upload.write, chunk)
+                    store = await run_in_threadpool(OfficeFiles, service.root)
+                    return await run_in_threadpool(store.save_stream, name, upload)
         body = bytearray()
         async for chunk in request.stream():
-            if len(chunk) > maximum - len(body):
-                raise HTTPException(413, OFFICE_BODY_ERROR if binary else 'Request too large')
+            if len(chunk) > LEGACY_OFFICE_BODY_LIMIT - len(body):
+                raise HTTPException(413, 'Request too large')
             body.extend(chunk)
-        if binary:
-            data = body
-            name = unquote(request.headers.get('x-office-filename', ''), errors='strict')
-        else:
-            try:
-                draft = json.loads(body)
-                data = base64.b64decode(draft['data'], validate=True)
-                name = draft['name']
-            except (ValueError, KeyError, TypeError):
-                raise ValueError('Нужны имя файла и содержимое base64') from None
+        try:
+            draft = json.loads(body)
+            data = base64.b64decode(draft['data'], validate=True)
+            name = draft['name']
+        except (ValueError, KeyError, TypeError):
+            raise ValueError('Нужны имя файла и содержимое base64') from None
         # ZIP/XML parsing runs outside the event loop.
         return await asyncio.to_thread(OfficeFiles(service.root).save,name,data)
 
