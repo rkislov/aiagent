@@ -36,7 +36,8 @@ class AgentRunner:
                 raise ValueError("This session already has an active run")
             self._active.add(key)
         try:
-            yield from self._run(agent, text, session_id, confirm, provider, cancelled, images, web_enabled,knowledge=knowledge)
+            with self.audit.track(agent.name) as progress:
+                yield from self._run(agent, text, session_id, confirm, provider, cancelled, images, web_enabled, progress, knowledge=knowledge)
         finally:
             with self._guard:
                 self._active.discard(key)
@@ -65,11 +66,12 @@ class AgentRunner:
             if key in self._active: raise ValueError('This conversation already has an active run')
             self._active.add(key)
         try:
-            yield from self._run(selected, text, session_id, confirm, provider, cancelled, images, web_enabled, shared=True, chat_connections=connections,knowledge=knowledge)
+            with self.audit.track(selected.name) as progress:
+                yield from self._run(selected, text, session_id, confirm, provider, cancelled, images, web_enabled, progress, shared=True, chat_connections=connections, knowledge=knowledge)
         finally:
             with self._guard: self._active.discard(key)
 
-    def _run(self, agent, text, session_id, confirm, provider, cancelled, images, web_enabled, shared=False, chat_connections=None,knowledge=None):
+    def _run(self, agent, text, session_id, confirm, provider, cancelled, images, web_enabled, progress, shared=False, chat_connections=None,knowledge=None):
         name = agent.name
         if images and agent.model.startswith("demo:"):
             raise ValueError("Демо-модель не распознаёт фотографии. Выберите модель с поддержкой изображений.")
@@ -148,6 +150,7 @@ class AgentRunner:
             if stopped():
                 yield {"type": "error", "error": "Run cancelled"}
                 return
+            progress('model')
             started = time.monotonic()
             message = None
             partial = ""
@@ -190,6 +193,7 @@ class AgentRunner:
                         raise PermissionError("Run cancelled before skill execution")
                     if skill_name not in skills:
                         raise ValueError(f"Agent has no permission for skill: {skill_name}")
+                    progress('preparing', skill_name)
                     payload = json.loads(fn.get("arguments", "{}"))
                     skill, _, code = skills[skill_name]
                     from superagent.gateway.models import validate_payload
@@ -215,10 +219,12 @@ class AgentRunner:
                             provider_cfg=resolve_provider(media_hub.config,cfg.provider)
                             notice=('Будет создано одно изображение. Провайдер получает описание; возможна плата за генерацию.' if skill_name=='image_generate' else 'Текст документа передаётся embedding-провайдеру для индексации; возможна плата за API.' if skill_name=='knowledge_index' else 'Текст поискового запроса передаётся embedding-провайдеру; возможна плата за API.')
                             approval['preview']={'operation':skill_name,'input':payload,'provider':cfg.provider,'model':cfg.model,'api_url':provider_cfg.base_url if provider_cfg else '', 'notice':notice}
+                        progress('confirmation', skill_name)
                         yield approval
                         if confirm is None or not confirm(approval) or stopped():
                             status = "denied"
                             raise PermissionError("Action denied: explicit confirmation was not received")
+                    progress('skill', skill_name)
                     yield {"type": "skill_start", "skill": skill_name, "input": payload}
                     from superagent.integrations.catalog import BUILTINS
                     output = write_plan.execute(confirmed=True) if write_plan is not None else media_hub.run(skill_name,payload) if media_hub is not None else self.builtins.run(skill_name, payload) if skill_name in BUILTINS and self.builtins else self.executor.run(skill, payload, code)

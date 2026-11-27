@@ -85,6 +85,22 @@ def test_legacy_vectors_migrate_into_default_collection(platform):
  with store.connect() as db:assert db.execute('SELECT collection,text FROM chunks').fetchone()==('default','legacy knowledge')
 
 
+def test_knowledge_graph_uses_saved_vectors_and_respects_selected_collection(platform, monkeypatch):
+    store, a, b, files = setup_collections(platform, monkeypatch)
+    with TestClient(create_app(platform, authentication=False), base_url='http://localhost') as client:
+        monkeypatch.setattr('superagent.integrations.knowledge.embed', lambda *args: pytest.fail('Graph called embedding API'))
+        response = client.get('/api/knowledge/graph')
+        assert response.status_code == 200
+        full = response.json()
+        assert full['total_documents'] == 2
+        assert {edge['type'] for edge in full['edges']} == {'contains', 'similar'}
+        assert all('vector' not in node and 'text' not in node for node in full['nodes'])
+        local = client.get('/api/knowledge/graph', params={'collection': a['id']}).json()
+        assert {node['file_id'] for node in local['nodes'] if node['type'] == 'document'} == {files[0]['id']}
+        assert {edge['type'] for edge in local['edges']} == {'contains'}
+        assert client.get('/api/knowledge/graph?collection=unknown').status_code == 400
+
+
 def test_knowledge_buttons_api_confirmation_and_dialog_settings(platform,monkeypatch):
  platform.config.embeddings.enabled=True
  monkeypatch.setattr('superagent.integrations.knowledge.embed',lambda cfg,texts:[[1.,0.] for _ in texts])

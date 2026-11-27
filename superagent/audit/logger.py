@@ -21,6 +21,7 @@ class Audit:
         (root / "data").mkdir(parents=True, exist_ok=True)
         self.db = root / "data/audit.db"
         self.lock = threading.RLock()
+        self._active = {}
         self.logger = logging.Logger(f"audit.{uuid4().hex}", level=logging.INFO)
         handler = RotatingFileHandler(root / "data/audit.log", maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(message)s"))
@@ -46,6 +47,29 @@ class Audit:
             yield
         finally:
             self._user.reset(token)
+
+    @contextmanager
+    def track(self, agent: str, stage: str = "starting", skill: str | None = None):
+        activity_id = uuid4().hex
+        user = self._user.get()
+        started = datetime.now(timezone.utc).isoformat()
+
+        def update(stage, skill=None):
+            entry = self.redact({"id": activity_id, "time": started, "user": user,
+                                 "agent": agent, "stage": stage, "skill": skill})
+            with self.lock:
+                self._active[activity_id] = entry
+
+        update(stage, skill)
+        try:
+            yield update
+        finally:
+            with self.lock:
+                self._active.pop(activity_id, None)
+
+    def active(self):
+        with self.lock:
+            return list(self._active.values())
 
     def record(self, *, agent: str, kind: str, skill: str | None = None, input=None, output=None, status="ok", duration_ms=0, session_id=None):
         entry = self.redact({"time": datetime.now(timezone.utc).isoformat(), "user": self._user.get(), "agent": agent, "kind": kind,
