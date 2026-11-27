@@ -12,15 +12,17 @@ from uuid import uuid4
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
-MAX_FILE = 8_000_000
+MAX_FILE = 25_000_000
 MIME = {'docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation'}
 
 
 def check_package(data, extension):
-    if extension not in MIME or not 0 < len(data) <= MAX_FILE:
-        raise ValueError('Нужен DOCX, XLSX или PPTX размером до 8 МБ')
+    if extension not in MIME:
+        raise ValueError('Поддерживаются только DOCX, XLSX и PPTX')
+    if not 0 < len(data) <= MAX_FILE:
+        raise ValueError(f'Нужен непустой файл размером до {MAX_FILE // 1_000_000} МБ')
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             entries=archive.infolist()
@@ -32,9 +34,13 @@ def check_package(data, extension):
                 raise ValueError('Формат содержимого не соответствует расширению')
             for entry in entries:
                 name=entry.filename.lower()
-                if entry.flag_bits & 1 or entry.file_size>10_000_000 or any(x in name for x in ('vbaproject','/embeddings/','/externallinks/')):
+                if entry.flag_bits & 1 or any(x in name for x in ('vbaproject','/embeddings/','/externallinks/')):
                     raise ValueError('Зашифрованные файлы, макросы и встроенные объекты не поддерживаются')
+                if entry.file_size > MAX_FILE:
+                    raise ValueError('В документе слишком большой вложенный файл')
                 if name.endswith(('.xml','.rels')):
+                    if entry.file_size > 10_000_000:
+                        raise ValueError('В документе слишком большой раздел XML. Разделите документ на несколько файлов.')
                     node=ElementTree.fromstring(archive.read(entry))
                     if name.endswith('.rels'):
                         for rel in node:

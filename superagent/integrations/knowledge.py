@@ -106,7 +106,10 @@ class Knowledge:
         entries=extract(row['extension'],data)
         content='\n'.join(str(e['path'])+': '+str(e['value']) for e in entries)
         chunks=[content[i:i+2000] for i in range(0,len(content),1800)]
-        if not chunks or len(chunks)>128:raise ValueError('Для индексации нужен документ до 128 фрагментов (~230000 символов)')
+        if not chunks:
+            raise ValueError('В документе не найден текст для индексации')
+        if len(chunks) > 128:
+            raise ValueError('Для индексации доступно около 230 000 символов на документ. Разделите текст на несколько файлов.')
         key=signature(config)
         vectors=[]
         for i in range(0,len(chunks),32):vectors.extend(embed(config,chunks[i:i+32]))
