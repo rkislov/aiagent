@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextvars
 import json
 import queue
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -21,8 +23,13 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from superagent.gateway.models import Agent, StrictModel
 from superagent.gateway.config import EmbeddingConfig
 from superagent.gateway.registry import parse_skill
+from superagent.integrations.office_files import MAX_FILE, OfficeFiles
 from superagent.service import Platform
 from superagent.schedules import Schedule, Store, Scheduler, validate_target
+
+OFFICE_BODY_TYPE = 'application/octet-stream'
+LEGACY_OFFICE_BODY_LIMIT = 11_000_000
+OFFICE_BODY_ERROR = f'Документ превышает лимит загрузки. Загружайте файлы до {MAX_FILE // 1_000_000} МБ.'
 
 
 class SkillDraft(StrictModel):
@@ -140,11 +147,18 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         if origin and origin != expected:
             return JSONResponse({"detail": "Cross-origin requests are forbidden"}, status_code=403)
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-            if not request.headers.get("content-type", "").startswith("application/json"):
+            media_type = request.headers.get('content-type', '').split(';', 1)[0].strip().lower()
+            office_upload = request.method == 'POST' and request.url.path == '/api/files'
+            if office_upload and media_type == OFFICE_BODY_TYPE:
+                maximum = MAX_FILE
+            elif media_type.startswith('application/json'):
+                maximum = LEGACY_OFFICE_BODY_LIMIT if office_upload else 2_000_000
+            else:
                 return JSONResponse({"detail": "application/json required"}, status_code=415)
             length = request.headers.get("content-length")
-            if length and int(length) > (11_000_000 if request.url.path=='/api/files' else 2_000_000):
-                return JSONResponse({"detail": "Request too large"}, status_code=413)
+            if length and int(length) > maximum:
+                detail = OFFICE_BODY_ERROR if office_upload and media_type == OFFICE_BODY_TYPE else 'Request too large'
+                return JSONResponse({'detail': detail}, status_code=413)
         context_token = None
         if auth and request.url.path.startswith('/api/') and not request.url.path.startswith('/api/auth/'):
             user = auth.user(request.cookies.get('session'))
@@ -281,29 +295,34 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
 
     @app.get('/api/files')
     def list_files():
-        from superagent.integrations.office_files import OfficeFiles
         return OfficeFiles(service.root).list()
 
     @app.post('/api/files')
     async def upload_file(request: Request):
-        import base64,binascii
-        from superagent.integrations.office_files import OfficeFiles
-        body=bytearray()
+        media_type = request.headers['content-type'].split(';', 1)[0].strip().lower()
+        binary = media_type == OFFICE_BODY_TYPE
+        maximum = MAX_FILE if binary else LEGACY_OFFICE_BODY_LIMIT
+        body = bytearray()
         async for chunk in request.stream():
+            if len(chunk) > maximum - len(body):
+                raise HTTPException(413, OFFICE_BODY_ERROR if binary else 'Request too large')
             body.extend(chunk)
-            if len(body)>11_000_000:raise HTTPException(413,'Файл слишком большой')
-        try:
-            draft=json.loads(body)
-            data=base64.b64decode(draft['data'],validate=True)
-            name=draft['name']
-        except (ValueError,KeyError,TypeError,binascii.Error):
-            raise ValueError('Нужны имя файла и содержимое base64') from None
+        if binary:
+            data = body
+            name = unquote(request.headers.get('x-office-filename', ''), errors='strict')
+        else:
+            try:
+                draft = json.loads(body)
+                data = base64.b64decode(draft['data'], validate=True)
+                name = draft['name']
+            except (ValueError, KeyError, TypeError):
+                raise ValueError('Нужны имя файла и содержимое base64') from None
         # ZIP/XML parsing runs outside the event loop.
         return await asyncio.to_thread(OfficeFiles(service.root).save,name,data)
 
     @app.get('/api/files/{file_id}/download')
     def download_file(file_id: str):
-        from superagent.integrations.office_files import OfficeFiles,MIME
+        from superagent.integrations.office_files import MIME
         store=OfficeFiles(service.root)
         info=store.info(file_id)
         return FileResponse(store.path(file_id),filename=info['name'],media_type=MIME[info['extension']],headers={'Cache-Control':'private, no-store'})
@@ -554,6 +573,11 @@ def create_app(platform: Platform | None = None, root: Path | None = None, *, au
         from superagent.gateway.agent_templates import work_manager
         models=[f'{name}:{model}' for name,cfg in service.config.providers.items() if cfg.type!='demo' and (cfg.key() or cfg.type=='ollama') for model in cfg.models]
         return work_manager(models[0] if models else 'openai:gpt-4o-mini').model_dump()
+
+    @app.get('/api/agent-templates/security_auditor')
+    def security_auditor_template():
+        from superagent.gateway.agent_templates import security_auditor
+        return security_auditor().model_dump()
 
     @app.get('/api/agent-templates/lawyer_rf')
     def lawyer_template():

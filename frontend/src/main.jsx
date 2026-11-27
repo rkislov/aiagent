@@ -27,7 +27,7 @@ import {python} from '@codemirror/lang-python';
 import {parse as parseYaml, stringify as stringifyYaml} from 'yaml';
 
 const sharedTitles={};
-const display = name => sharedTitles[name] || ({plain_chat:'Модель',office_assistant:'Офисный помощник',lawyer_rf:'Юрист РФ',accountant_1c:'Бухгалтер 1С',work_manager:'Диспетчер задач'})[name] || (name||'Модель').replaceAll('_',' ');
+const display = name => sharedTitles[name] || ({plain_chat:'Модель',office_assistant:'Офисный помощник',lawyer_rf:'Юрист РФ',accountant_1c:'Бухгалтер 1С',work_manager:'Диспетчер задач',security_auditor:'Аудитор безопасности'})[name] || (name||'Модель').replaceAll('_',' ');
 const pretty = value => JSON.stringify(value, null, 2);
 function metadataObject(text) {const match = text.match(/^---\s*\n([\s\S]*?)\n---/); return parseYaml(match ? match[1] : text) || {};}
 async function api(path, options = {}) {
