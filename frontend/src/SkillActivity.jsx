@@ -13,10 +13,10 @@ export default function SkillActivity({skill, statusText, started}) {
  const confirmation = statusText?.startsWith('Требуется');
  const subtitle = ({web_search:'Ищу подходящие источники',web_read:'Открываю страницу и извлекаю текст',image_generate:'Создаю изображение по вашему описанию',office_create:'Собираю файл для скачивания',knowledge_search:'Ищу в подключённых базах знаний'})[skill] || 'Выполняю действие и передам результат в диалог';
  const title = skill ? skillLabel(skill) : confirmation ? 'Нужно ваше подтверждение' : 'Модель готовит ответ';
- return <div className="run-activity">
+ return <div className="run-activity floating-tile rounded-2xl">
   {skill ? <SkillIcon skill={skill} active/> : confirmation ? <span className="skill-symbol"><ShieldCheck size={22}/></span> : <span className="skill-symbol model-breath"><Sparkles size={22}/></span>}
   <div className="run-activity-copy">
-   <div role="status"><strong>{title}</strong><span>{skill ? subtitle : statusText}</span></div>
+   <div className="run-activity-status grid gap-1" role="status"><strong>{title}</strong><span>{skill ? subtitle : statusText}</span></div>
    {!confirmation && <Progress label={title}/>}
   </div>
   {started && <Elapsed started={started}/>}

@@ -31,9 +31,30 @@ class Memory:
             row = db.execute('SELECT web FROM dialog_settings WHERE id=?', (session_id,)).fetchone()
             return bool(row[0]) if row else False
 
-    def load(self, session_id: str) -> list[dict]:
+    def load(self, session_id: str, *, include_message_ids: bool = False) -> list[dict]:
         with self.connect() as db:
-            return [json.loads(row[0]) for row in db.execute("SELECT payload FROM messages WHERE session_id=? ORDER BY id", (session_id,))]
+            rows = db.execute("SELECT id, payload FROM messages WHERE session_id=? ORDER BY id", (session_id,))
+            messages = []
+            for message_id, payload in rows:
+                message = json.loads(payload)
+                content = message.get('content')
+                if include_message_ids and message.get('role') == 'assistant' and isinstance(content, str) and content and not message.get('tool_calls'):
+                    message['_message_id'] = message_id
+                messages.append(message)
+        return messages
+
+    def save_feedback(self, session_id: str, agent: str, message_id: int, rating: str | None) -> bool:
+        with self.connect() as db:
+            result = db.execute('''
+                UPDATE messages SET payload=json_set(payload, '$._feedback', ?)
+                WHERE id=? AND session_id=?
+                  AND EXISTS (SELECT 1 FROM sessions WHERE id=? AND agent=?)
+                  AND json_extract(payload, '$.role')='assistant'
+                  AND json_type(payload, '$.content')='text'
+                  AND json_extract(payload, '$.content')<>''
+                  AND coalesce(json_array_length(payload, '$.tool_calls'), 0)=0
+            ''', (rating, message_id, session_id, session_id, agent))
+            return result.rowcount == 1
 
     def knowledge(self,session_id,collections=None):
         with self.connect() as db:
@@ -43,9 +64,10 @@ class Memory:
             row=db.execute('SELECT collections FROM dialog_knowledge WHERE id=?',(session_id,)).fetchone()
             return json.loads(row[0]) if row else []
 
-    def append(self, session_id: str, message: dict):
+    def append(self, session_id: str, message: dict) -> int:
         with self.connect() as db:
-            db.execute("INSERT INTO messages(session_id, payload) VALUES(?,?)", (session_id, json.dumps(message, ensure_ascii=False)))
+            return db.execute("INSERT INTO messages(session_id, payload) VALUES(?,?)",
+                              (session_id, json.dumps(message, ensure_ascii=False))).lastrowid
 
     def sessions(self, agent: str):
         with self.connect() as db:
